@@ -1,0 +1,146 @@
+test,variant,aggressor,rep,cycles_per_iter,ns_per_iter
+vmcnt-exec0,s_nop 0 (EXEC=0),none,0,0.0000,1216
+vmcnt-exec0,s_nop 0 (EXEC=0),none,1,0.0000,1216
+vmcnt-exec0,s_nop 0 (EXEC=0),none,2,0.0000,1216
+vmcnt-exec0,s_nop 0 (EXEC=0),none,3,0.0000,1216
+vmcnt-exec0,s_nop 0 (EXEC=0),none,4,0.0000,1216
+vmcnt-exec0,buffer_inv (EXEC=0),none,0,1.0000,1216
+vmcnt-exec0,buffer_inv (EXEC=0),none,1,1.0000,1216
+vmcnt-exec0,buffer_inv (EXEC=0),none,2,1.0000,1216
+vmcnt-exec0,buffer_inv (EXEC=0),none,3,1.0000,1216
+vmcnt-exec0,buffer_inv (EXEC=0),none,4,1.0000,1216
+vmcnt-exec0,buffer_inv (EXEC unchanged),none,0,1.0000,1216
+vmcnt-exec0,buffer_inv (EXEC unchanged),none,1,1.0000,1216
+vmcnt-exec0,buffer_inv (EXEC unchanged),none,2,1.0000,1216
+vmcnt-exec0,buffer_inv (EXEC unchanged),none,3,1.0000,1216
+vmcnt-exec0,buffer_inv (EXEC unchanged),none,4,1.0000,1216
+vmcnt-exec0,global_load_dword (EXEC=0),none,0,1.0000,1216
+vmcnt-exec0,global_load_dword (EXEC=0),none,1,1.0000,1216
+vmcnt-exec0,global_load_dword (EXEC=0),none,2,1.0000,1216
+vmcnt-exec0,global_load_dword (EXEC=0),none,3,1.0000,1216
+vmcnt-exec0,global_load_dword (EXEC=0),none,4,1.0000,1216
+issue,none,none,0,0.001,0.000
+issue,none,none,1,0.001,0.000
+issue,none,none,2,0.001,0.000
+issue,none,none,3,0.001,0.000
+issue,none,none,4,0.001,0.000
+latency,none,none,0,6.025,2.874
+latency,none,none,1,6.025,2.874
+latency,none,none,2,6.023,2.876
+latency,none,none,3,6.025,2.876
+latency,none,none,4,6.023,2.876
+issue,s_nop 0,none,0,6.023,2.876
+issue,s_nop 0,none,1,6.023,2.876
+issue,s_nop 0,none,2,6.022,2.876
+issue,s_nop 0,none,3,6.025,2.876
+issue,s_nop 0,none,4,6.025,2.876
+latency,s_nop 0,none,0,10.024,4.785
+latency,s_nop 0,none,1,10.022,4.783
+latency,s_nop 0,none,2,10.020,4.780
+latency,s_nop 0,none,3,10.024,4.780
+latency,s_nop 0,none,4,10.024,4.780
+issue,buffer_inv,none,0,9.029,4.314
+issue,buffer_inv,none,1,9.028,4.316
+issue,buffer_inv,none,2,9.030,4.314
+issue,buffer_inv,none,3,9.031,4.316
+issue,buffer_inv,none,4,9.031,4.314
+latency,buffer_inv,none,0,98.510,46.851
+latency,buffer_inv,none,1,94.532,45.239
+latency,buffer_inv,none,2,98.509,46.858
+latency,buffer_inv,none,3,94.537,45.271
+latency,buffer_inv,none,4,98.513,46.836
+issue,buffer_inv sc0,none,0,9.028,4.319
+issue,buffer_inv sc0,none,1,9.030,4.319
+issue,buffer_inv sc0,none,2,9.030,4.319
+issue,buffer_inv sc0,none,3,9.029,4.319
+issue,buffer_inv sc0,none,4,9.028,4.314
+latency,buffer_inv sc0,none,0,98.512,46.848
+latency,buffer_inv sc0,none,1,94.532,45.249
+latency,buffer_inv sc0,none,2,98.512,46.863
+latency,buffer_inv sc0,none,3,94.534,45.242
+latency,buffer_inv sc0,none,4,98.512,46.863
+cache[coarse],none,none,0,176.004,83.945
+cache[coarse],none,none,1,172.004,82.617
+cache[coarse],none,none,2,176.004,83.906
+cache[coarse],none,none,3,172.004,82.617
+cache[coarse],none,none,4,176.004,83.906
+cache[coarse+bypass-l1],none,none,0,272.062,130.195
+cache[coarse+bypass-l1],none,none,1,272.008,130.195
+cache[coarse+bypass-l1],none,none,2,271.348,129.883
+cache[coarse+bypass-l1],none,none,3,272.172,130.352
+cache[coarse+bypass-l1],none,none,4,272.145,130.352
+cache[coarse],buffer_inv,none,0,180.004,85.781
+cache[coarse],buffer_inv,none,1,176.004,84.570
+cache[coarse],buffer_inv,none,2,180.004,85.742
+cache[coarse],buffer_inv,none,3,176.004,84.570
+cache[coarse],buffer_inv,none,4,180.000,85.781
+cache[coarse+bypass-l1],buffer_inv,none,0,275.781,132.070
+cache[coarse+bypass-l1],buffer_inv,none,1,276.031,132.305
+cache[coarse+bypass-l1],buffer_inv,none,2,276.082,132.188
+cache[coarse+bypass-l1],buffer_inv,none,3,275.707,132.461
+cache[coarse+bypass-l1],buffer_inv,none,4,276.688,132.500
+cache[coarse],buffer_inv sc0,none,0,180.000,85.781
+cache[coarse],buffer_inv sc0,none,1,176.004,84.531
+cache[coarse],buffer_inv sc0,none,2,180.004,85.781
+cache[coarse],buffer_inv sc0,none,3,176.004,84.531
+cache[coarse],buffer_inv sc0,none,4,180.000,85.781
+cache[coarse],buffer_inv sc1,none,0,5383.836,2576.875
+cache[coarse],buffer_inv sc1,none,1,5384.703,2575.000
+cache[coarse],buffer_inv sc1,none,2,5384.082,2577.031
+cache[coarse],buffer_inv sc1,none,3,5384.793,2574.961
+cache[coarse],buffer_inv sc1,none,4,5383.992,2576.445
+cache[fine],none,none,0,176.004,83.867
+cache[fine],none,none,1,172.004,82.656
+cache[fine],none,none,2,176.004,83.867
+cache[fine],none,none,3,172.004,82.656
+cache[fine],none,none,4,176.004,83.867
+cache[fine+bypass-l1],none,none,0,272.219,130.312
+cache[fine+bypass-l1],none,none,1,272.602,130.469
+cache[fine+bypass-l1],none,none,2,272.121,130.352
+cache[fine+bypass-l1],none,none,3,272.098,130.391
+cache[fine+bypass-l1],none,none,4,272.254,130.234
+cache[fine],buffer_inv,none,0,180.000,85.781
+cache[fine],buffer_inv,none,1,176.004,84.531
+cache[fine],buffer_inv,none,2,180.004,85.781
+cache[fine],buffer_inv,none,3,176.004,84.570
+cache[fine],buffer_inv,none,4,180.000,85.781
+cache[fine+bypass-l1],buffer_inv,none,0,276.855,132.227
+cache[fine+bypass-l1],buffer_inv,none,1,276.297,132.461
+cache[fine+bypass-l1],buffer_inv,none,2,275.980,132.305
+cache[fine+bypass-l1],buffer_inv,none,3,276.961,132.500
+cache[fine+bypass-l1],buffer_inv,none,4,277.027,132.305
+cache[fine],buffer_inv sc0,none,0,180.000,85.742
+cache[fine],buffer_inv sc0,none,1,176.004,84.570
+cache[fine],buffer_inv sc0,none,2,180.000,85.781
+cache[fine],buffer_inv sc0,none,3,176.004,84.570
+cache[fine],buffer_inv sc0,none,4,180.000,85.781
+cache[fine],buffer_inv sc1,none,0,5384.406,2574.219
+cache[fine],buffer_inv sc1,none,1,5382.559,2576.953
+cache[fine],buffer_inv sc1,none,2,5384.621,2574.141
+cache[fine],buffer_inv sc1,none,3,5384.215,2575.898
+cache[fine],buffer_inv sc1,none,4,5384.688,2574.297
+cache+aggressor,none,s_nop 0,0,192.039,92.656
+cache+aggressor,none,s_nop 0,1,192.039,92.656
+cache+aggressor,none,s_nop 0,2,192.043,92.695
+cache+aggressor,none,s_nop 0,3,192.043,92.617
+cache+aggressor,none,s_nop 0,4,192.043,92.617
+cache+aggressor,none,buffer_inv,0,514.535,247.305
+cache+aggressor,none,buffer_inv,1,514.504,247.383
+cache+aggressor,none,buffer_inv,2,514.148,247.070
+cache+aggressor,none,buffer_inv,3,514.281,247.305
+cache+aggressor,none,buffer_inv,4,514.148,247.070
+cache+aggressor,none,buffer_inv sc0,0,514.227,247.109
+cache+aggressor,none,buffer_inv sc0,1,514.277,247.344
+cache+aggressor,none,buffer_inv sc0,2,514.441,247.305
+cache+aggressor,none,buffer_inv sc0,3,514.504,247.305
+cache+aggressor,none,buffer_inv sc0,4,514.453,247.188
+cache+paced-aggressor,none,s_nop 0,0,192.039,92.656
+cache+paced-aggressor,none,s_nop 0,1,192.043,92.617
+cache+paced-aggressor,none,s_nop 0,2,192.039,92.500
+cache+paced-aggressor,none,s_nop 0,3,192.039,92.734
+cache+paced-aggressor,none,s_nop 0,4,192.039,92.539
+cache+paced-aggressor,none,buffer_inv,0,341.320,164.141
+cache+paced-aggressor,none,buffer_inv,1,341.316,164.180
+cache+paced-aggressor,none,buffer_inv,2,341.324,164.180
+cache+paced-aggressor,none,buffer_inv,3,341.324,164.141
+cache+paced-aggressor,none,buffer_inv,4,341.316,164.141
