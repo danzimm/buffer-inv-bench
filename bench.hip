@@ -390,10 +390,25 @@ struct Options {
   int Blocks = 0; // 0 = number of CUs.
 };
 
+// With --manifest, one line per timed kernel launch, in launch order, so a
+// profiler's per-dispatch records (e.g. rocprofv3 hardware counters) can be
+// matched to tests. counters.py uses this.
+static FILE *Manifest = nullptr;
+
 struct TestId {
-  const char *Test;
+  const char *Kernel, *Test;
   int I, E, Aggressor;
 };
+
+// Rep -1 is the warm-up launch.
+static void logLaunch(const TestId &Id, int Rep, int Waves,
+                      double OpsPerWave) {
+  if (!Manifest)
+    return;
+  fprintf(Manifest, "%s,%s,%s,%s,%s,%d,%d,%.0f\n", Id.Kernel, Id.Test,
+          instName(Id.I), execName(Id.E), instName(Id.Aggressor), Rep, Waves,
+          OpsPerWave);
+}
 
 static void emitTiming(const TestId &Id, int Rep,
                        const std::vector<unsigned long long> &Cycles,
@@ -421,9 +436,11 @@ static void runTimed(const TestId &Id, int Slots, double OpsPerSample,
   HIP_CHECK(hipMalloc(&DCycles, Slots * sizeof(unsigned long long)));
   HIP_CHECK(hipMalloc(&DReal, Slots * sizeof(unsigned long long)));
   std::vector<unsigned long long> Cycles(Slots), Real(Slots);
+  logLaunch(Id, -1, Slots, OpsPerSample);
   Launch(DCycles, DReal); // Warm-up launch, not reported.
   HIP_CHECK(hipDeviceSynchronize());
   for (int Rep = 0; Rep < O.Reps; ++Rep) {
+    logLaunch(Id, Rep, Slots, OpsPerSample);
     Launch(DCycles, DReal);
     HIP_CHECK(hipGetLastError());
     HIP_CHECK(hipDeviceSynchronize());
@@ -439,7 +456,7 @@ static void runTimed(const TestId &Id, int Slots, double OpsPerSample,
 
 template <int I, int E> static void runIssue(const Options &O) {
   int B = O.Blocks;
-  runTimed({"issue", I, E, NONE}, B, (double)O.Iters * OpsPerIter, O,
+  runTimed({"issueKernel", "issue", I, E, NONE}, B, (double)O.Iters * OpsPerIter, O,
            [&](auto *C, auto *R) {
              issueKernel<I, E><<<B, 64>>>(C, R, O.Iters);
            });
@@ -447,7 +464,7 @@ template <int I, int E> static void runIssue(const Options &O) {
 
 template <int I, int E> static void runLatency(const Options &O) {
   int B = O.Blocks;
-  runTimed({"latency", I, E, NONE}, B, (double)O.Iters * OpsPerIter, O,
+  runTimed({"latencyKernel", "latency", I, E, NONE}, B, (double)O.Iters * OpsPerIter, O,
            [&](auto *C, auto *R) {
              latencyKernel<I, E><<<B, 64>>>(C, R, O.Iters);
            });
@@ -457,7 +474,7 @@ template <int I, int Aggressor, bool Paced = false, bool BypassL1 = false>
 static void runCache(const char *Test, const Options &O, const unsigned *Buf,
                      int LoaderWaves, int TotalWaves) {
   int B = O.Blocks;
-  runTimed({Test, I, EXEC_ALL, Aggressor}, B * LoaderWaves, O.Iters, O,
+  runTimed({"cacheKernel", Test, I, EXEC_ALL, Aggressor}, B * LoaderWaves, O.Iters, O,
            [&](auto *C, auto *R) {
              cacheKernel<I, Aggressor, Paced, BypassL1>
                  <<<B, 64 * TotalWaves>>>(C, R, Buf, O.Iters, LoaderWaves);
@@ -473,8 +490,18 @@ int main(int Argc, char **Argv) {
       O.Iters = atoi(Argv[++A]);
     else if (!strcmp(Argv[A], "--blocks") && A + 1 < Argc)
       O.Blocks = atoi(Argv[++A]);
-    else {
-      fprintf(stderr, "usage: %s [--reps N] [--iters N] [--blocks N]\n",
+    else if (!strcmp(Argv[A], "--manifest") && A + 1 < Argc) {
+      Manifest = fopen(Argv[++A], "w");
+      if (!Manifest) {
+        perror(Argv[A]);
+        return 1;
+      }
+      fprintf(Manifest,
+              "kernel,test,instruction,exec,aggressor,rep,waves,ops_per_wave\n");
+    } else {
+      fprintf(stderr,
+              "usage: %s [--reps N] [--iters N] [--blocks N] "
+              "[--manifest FILE]\n",
               Argv[0]);
       return 2;
     }
@@ -555,5 +582,7 @@ int main(int Argc, char **Argv) {
 
   HIP_CHECK(hipFree(Fine));
   HIP_CHECK(hipFree(Coarse));
+  if (Manifest)
+    fclose(Manifest);
   return 0;
 }

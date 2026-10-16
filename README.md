@@ -28,3 +28,23 @@ Tests (all instruction sequences are inline asm, so they are exact):
   reloads that bypass L1 with `sc1` loads. Coarse- and fine-grained memory.
 - **contention**: loader waves on the same CU while other waves issue the
   instruction back-to-back, or paced with `s_sleep 1`.
+
+## Checking the cache results with hardware counters
+
+The cache test infers L1/L2 hits from timing. `counters.py` checks it
+directly: it runs the benchmark under `rocprofv3`, collects vector L1 (TCP)
+and L2 (TCC) counters for each cache test launch, and reports them per wave
+per loop iteration with an "invalidated?" verdict for L1 and L2.
+
+```
+./counters.py                 # needs rocprofv3 in PATH
+./counters.py --arch gfx942
+```
+
+`bench.hip --manifest FILE` writes one line per timed launch so the profiler's
+per-dispatch records can be matched to tests.
+
+## Checking edits to bench.hip
+
+`bash verify.sh` (or `ARCH=gfx942 bash verify.sh`) compares the GPU machine
+code of the working copy against the last commit.

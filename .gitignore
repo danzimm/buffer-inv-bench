@@ -1,2 +1,4 @@
 build/
 *.mdoc.json
+__pycache__/
+.rocprofv3/
