@@ -2,8 +2,6 @@
 # Self-extracting buffer_inv microbenchmark (gfx942/gfx950).
 # Unpacks into ${BENCH_DIR:-./buffer-inv-bench}, then builds and runs it.
 # Extra arguments are passed to run.py, e.g. --csv raw.csv or --reps 10.
-# To check the cache results with hardware counters afterwards, run
-#   python3 ${BENCH_DIR:-./buffer-inv-bench}/counters.py
 set -euo pipefail
 dir="${BENCH_DIR:-./buffer-inv-bench}"
 mkdir -p "$dir"
@@ -18,7 +16,9 @@ cat > "$dir/bench.hip" <<'BUFFER_INV_BENCH_EOF_BENCH_HIP'
 //   vmcnt       Does the instruction increment VM_CNT? Read from HW_REG_IB_STS.
 //   issue       Cost of issuing it back-to-back.
 //   latency     Cost of issuing it and waiting with `s_waitcnt vmcnt(0)`.
-//   cache       Does it invalidate the vector L1 or L2?
+//   cache       Does it invalidate the vector L1 or L2? Untimed: run.py reads
+//               L1 (TCP) and L2 (TCC) hardware counters for these launches
+//               with rocprofv3.
 //   contention  Does it slow the loads of other waves on the same CU?
 //
 // All measured sequences are inline asm, so the instruction stream is exact.
@@ -348,20 +348,31 @@ __device__ __forceinline__ void loadFootprint(const unsigned *Base) {
     asm volatile("" ::"v"(V[K]));
 }
 
-// cache: reload an L1-resident footprint each iteration, with instruction I
-// issued before the reload. If I invalidates L1, the reloads miss and the
-// iteration gets slower; the BypassL1 variant (sc1 loads) is the L1-miss
-// reference. With BypassL1 and I = buffer_inv, the reloads hit L2, so this
-// also checks whether buffer_inv invalidates L2.
-//
-// contention: the same loader loop with I = NONE, while other waves of the
+// cache: the access pattern for checking, with hardware counters, whether
+// instruction I invalidates L1 or L2. Not timed. One wave per block: warm the
+// wave's 2 KiB footprint, then each iteration issue I and reload the
+// footprint. With plain loads the reloads hit L1, unless I invalidated it.
+// With BypassL1 (sc1 loads) the reloads skip L1 and hit L2, unless I
+// invalidated L2.
+template <int I, bool BypassL1>
+__global__ void cacheKernel(const unsigned *Buf, int Iters) {
+  const unsigned *Base = Buf + (size_t)blockIdx.x * DwordsPerWave;
+  loadFootprint(Base); // Warm L1 and L2.
+  for (int It = 0; It < Iters; ++It) {
+    op<I>();
+    loadFootprint<BypassL1>(Base);
+  }
+}
+
+// contention: the first LoaderWavesPerBlock waves of each block reload their
+// L1-resident footprint each iteration and are timed. The other waves of the
 // same block (and therefore the same CU) issue Aggressor in a loop. Paced
 // aggressors follow each instruction with `s_sleep 1` (about 64 cycles).
 // Pacing is a template parameter so the unpaced loop is truly back-to-back.
-template <int I, int Aggressor, bool Paced, bool BypassL1>
-__global__ void cacheKernel(unsigned long long *Cycles, unsigned long long *Real,
-                            const unsigned *Buf, int Iters,
-                            int LoaderWavesPerBlock) {
+template <int Aggressor, bool Paced>
+__global__ void contentionKernel(unsigned long long *Cycles,
+                                 unsigned long long *Real, const unsigned *Buf,
+                                 int Iters, int LoaderWavesPerBlock) {
   int Wave = threadIdx.x / warpSize;
   if (Wave >= LoaderWavesPerBlock) {
     // Aggressor wave: keep issuing for longer than the loaders run.
@@ -383,10 +394,8 @@ __global__ void cacheKernel(unsigned long long *Cycles, unsigned long long *Real
 
   Timer T;
   T.start();
-  for (int It = 0; It < Iters; ++It) {
-    op<I>();
-    loadFootprint<BypassL1>(Base);
-  }
+  for (int It = 0; It < Iters; ++It)
+    loadFootprint(Base);
   T.stop(Cycles, Real, GlobalWave);
 }
 
@@ -398,11 +407,18 @@ struct Options {
   int Reps = 5;
   int Iters = 1024;
   int Blocks = 0; // 0 = number of CUs.
+  // Comma-separated tests to run.
+  std::string Tests = "vmcnt,issue,latency,cache,contention";
 };
 
-// With --manifest, one line per timed kernel launch, in launch order, so a
-// profiler's per-dispatch records (e.g. rocprofv3 hardware counters) can be
-// matched to tests. counters.py uses this.
+static bool runs(const Options &O, const char *Test) {
+  std::string List = "," + O.Tests + ",";
+  return List.find(std::string(",") + Test + ",") != std::string::npos;
+}
+
+// With --manifest, one line per kernel launch, in launch order, so a
+// profiler's per-dispatch records (rocprofv3 hardware counters) can be matched
+// to tests. run.py uses this for the cache test.
 static FILE *Manifest = nullptr;
 
 struct TestId {
@@ -480,13 +496,25 @@ template <int I, int E> static void runLatency(const Options &O) {
            });
 }
 
-template <int I, int Aggressor, bool Paced = false, bool BypassL1 = false>
-static void runCache(const char *Test, const Options &O, const unsigned *Buf,
-                     int LoaderWaves, int TotalWaves) {
+template <int I, bool BypassL1>
+static void runCache(const char *Test, const Options &O, const unsigned *Buf) {
+  TestId Id{"cacheKernel", Test, I, EXEC_ALL, NONE};
+  for (int Rep = -1; Rep < O.Reps; ++Rep) { // Rep -1 is the warm-up launch.
+    logLaunch(Id, Rep, O.Blocks, O.Iters);
+    cacheKernel<I, BypassL1><<<O.Blocks, 64>>>(Buf, O.Iters);
+    HIP_CHECK(hipGetLastError());
+    HIP_CHECK(hipDeviceSynchronize());
+  }
+}
+
+template <int Aggressor, bool Paced = false>
+static void runContention(const char *Test, const Options &O,
+                          const unsigned *Buf, int LoaderWaves,
+                          int TotalWaves) {
   int B = O.Blocks;
-  runTimed({"cacheKernel", Test, I, EXEC_ALL, Aggressor}, B * LoaderWaves, O.Iters, O,
-           [&](auto *C, auto *R) {
-             cacheKernel<I, Aggressor, Paced, BypassL1>
+  runTimed({"contentionKernel", Test, NONE, EXEC_ALL, Aggressor},
+           B * LoaderWaves, O.Iters, O, [&](auto *C, auto *R) {
+             contentionKernel<Aggressor, Paced>
                  <<<B, 64 * TotalWaves>>>(C, R, Buf, O.Iters, LoaderWaves);
            });
 }
@@ -500,6 +528,8 @@ int main(int Argc, char **Argv) {
       O.Iters = atoi(Argv[++A]);
     else if (!strcmp(Argv[A], "--blocks") && A + 1 < Argc)
       O.Blocks = atoi(Argv[++A]);
+    else if (!strcmp(Argv[A], "--tests") && A + 1 < Argc)
+      O.Tests = Argv[++A];
     else if (!strcmp(Argv[A], "--manifest") && A + 1 < Argc) {
       Manifest = fopen(Argv[++A], "w");
       if (!Manifest) {
@@ -511,6 +541,7 @@ int main(int Argc, char **Argv) {
     } else {
       fprintf(stderr,
               "usage: %s [--reps N] [--iters N] [--blocks N] "
+              "[--tests vmcnt,issue,latency,cache,contention] "
               "[--manifest FILE]\n",
               Argv[0]);
       return 2;
@@ -533,26 +564,32 @@ int main(int Argc, char **Argv) {
 
   // vmcnt: buffer_inv with all lanes and with EXEC=0, against s_nop (never
   // counted) and global_load (always counted).
-  runVmcnt<NOP, EXEC_ALL>(O.Blocks, O.Reps);
-  runVmcnt<NOP, EXEC_ZERO>(O.Blocks, O.Reps);
-  runVmcnt<INV, EXEC_ALL>(O.Blocks, O.Reps);
-  runVmcnt<INV, EXEC_ZERO>(O.Blocks, O.Reps);
-  runVmcnt<LOAD, EXEC_ALL>(O.Blocks, O.Reps);
-  runVmcnt<LOAD, EXEC_ZERO>(O.Blocks, O.Reps);
+  if (runs(O, "vmcnt")) {
+    runVmcnt<NOP, EXEC_ALL>(O.Blocks, O.Reps);
+    runVmcnt<NOP, EXEC_ZERO>(O.Blocks, O.Reps);
+    runVmcnt<INV, EXEC_ALL>(O.Blocks, O.Reps);
+    runVmcnt<INV, EXEC_ZERO>(O.Blocks, O.Reps);
+    runVmcnt<LOAD, EXEC_ALL>(O.Blocks, O.Reps);
+    runVmcnt<LOAD, EXEC_ZERO>(O.Blocks, O.Reps);
+  }
 
   // issue and latency: buffer_inv with all lanes and with EXEC=0, against
   // s_nop and buffer_inv sc0. Latency also reports `none` (only the wait).
-  runIssue<NOP, EXEC_ALL>(O);
-  runIssue<INV, EXEC_ALL>(O);
-  runIssue<INV, EXEC_ZERO>(O);
-  runIssue<INV_SC0, EXEC_ALL>(O);
-  runLatency<NONE, EXEC_ALL>(O);
-  runLatency<NOP, EXEC_ALL>(O);
-  runLatency<INV, EXEC_ALL>(O);
-  runLatency<INV, EXEC_ZERO>(O);
-  runLatency<INV_SC0, EXEC_ALL>(O);
+  if (runs(O, "issue")) {
+    runIssue<NOP, EXEC_ALL>(O);
+    runIssue<INV, EXEC_ALL>(O);
+    runIssue<INV, EXEC_ZERO>(O);
+    runIssue<INV_SC0, EXEC_ALL>(O);
+  }
+  if (runs(O, "latency")) {
+    runLatency<NONE, EXEC_ALL>(O);
+    runLatency<NOP, EXEC_ALL>(O);
+    runLatency<INV, EXEC_ALL>(O);
+    runLatency<INV, EXEC_ZERO>(O);
+    runLatency<INV_SC0, EXEC_ALL>(O);
+  }
 
-  // cache: one loader wave per block. contention: four loader waves plus four
+  // cache: one wave per block. contention: four loader waves plus four
   // aggressor waves per block.
   constexpr int ContentionLoaders = 4, ContentionWaves = 8;
   size_t Dwords = (size_t)O.Blocks * ContentionLoaders * DwordsPerWave;
@@ -565,30 +602,32 @@ int main(int Argc, char **Argv) {
                                   hipDeviceMallocFinegrained));
   HIP_CHECK(hipMemset(Fine, 0, Dwords * sizeof(unsigned)));
 
-  struct Mem {
-    const char *Test, *BypassTest;
-    const unsigned *Buf;
-  };
-  for (const Mem &M : {Mem{"cache[coarse]", "cache[coarse+bypass-l1]", Coarse},
-                       Mem{"cache[fine]", "cache[fine+bypass-l1]", Fine}}) {
-    runCache<NONE, NONE>(M.Test, O, M.Buf, 1, 1);
-    runCache<NONE, NONE, false, true>(M.BypassTest, O, M.Buf, 1, 1);
-    runCache<INV, NONE>(M.Test, O, M.Buf, 1, 1);
-    runCache<INV, NONE, false, true>(M.BypassTest, O, M.Buf, 1, 1);
-    runCache<INV_SC0, NONE>(M.Test, O, M.Buf, 1, 1);
-    runCache<INV_SC1, NONE>(M.Test, O, M.Buf, 1, 1);
+  // cache: plain reloads alone (they should hit L1), after buffer_inv (does it
+  // invalidate L1?), after buffer_inv sc1 (positive control: it does), and
+  // L1-bypassing reloads after buffer_inv (does it invalidate L2?).
+  if (runs(O, "cache")) {
+    runCache<NONE, false>("cache[coarse]", O, Coarse);
+    runCache<INV, false>("cache[coarse]", O, Coarse);
+    runCache<INV_SC1, false>("cache[coarse]", O, Coarse);
+    runCache<INV, true>("cache[coarse+bypass-l1]", O, Coarse);
+    runCache<NONE, false>("cache[fine]", O, Fine);
+    runCache<INV, false>("cache[fine]", O, Fine);
+    runCache<INV_SC1, false>("cache[fine]", O, Fine);
+    runCache<INV, true>("cache[fine+bypass-l1]", O, Fine);
   }
 
-  runCache<NONE, NOP>("contention", O, Coarse, ContentionLoaders,
-                      ContentionWaves);
-  runCache<NONE, INV>("contention", O, Coarse, ContentionLoaders,
-                      ContentionWaves);
-  runCache<NONE, INV_SC0>("contention", O, Coarse, ContentionLoaders,
-                          ContentionWaves);
-  runCache<NONE, NOP, true>("contention-paced", O, Coarse, ContentionLoaders,
-                            ContentionWaves);
-  runCache<NONE, INV, true>("contention-paced", O, Coarse, ContentionLoaders,
-                            ContentionWaves);
+  if (runs(O, "contention")) {
+    runContention<NOP>("contention", O, Coarse, ContentionLoaders,
+                       ContentionWaves);
+    runContention<INV>("contention", O, Coarse, ContentionLoaders,
+                       ContentionWaves);
+    runContention<INV_SC0>("contention", O, Coarse, ContentionLoaders,
+                           ContentionWaves);
+    runContention<NOP, true>("contention-paced", O, Coarse, ContentionLoaders,
+                             ContentionWaves);
+    runContention<INV, true>("contention-paced", O, Coarse, ContentionLoaders,
+                             ContentionWaves);
+  }
 
   HIP_CHECK(hipFree(Fine));
   HIP_CHECK(hipFree(Coarse));
@@ -601,13 +640,18 @@ cat > "$dir/run.py" <<'BUFFER_INV_BENCH_EOF_RUN_PY'
 #!/usr/bin/env python3
 """Build and run the buffer_inv microbenchmarks, then print markdown tables.
 
-Only needs Python 3.6+ and ROCm (hipcc). Works on any wave64 gfx9 GPU with
-buffer_inv, e.g. MI300 (gfx942) and MI350 (gfx950).
+Only needs Python 3.6+ and ROCm (hipcc, plus rocprofv3 for the cache test).
+Works on any wave64 gfx9 GPU with buffer_inv, e.g. MI300 (gfx942) and MI350
+(gfx950).
+
+The timed tests run first. Then the cache test runs under rocprofv3, which
+collects vector L1 (TCP) and L2 (TCC) hardware counters for each launch.
 
 Usage:
   ./run.py                      # detect arch, build, run, print tables
   ./run.py --arch gfx942        # override the detected arch
   ./run.py --csv out.csv        # also save the raw per-rep CSV
+  ./run.py --no-counters        # skip the rocprofv3 cache test
 """
 
 import argparse
@@ -619,6 +663,7 @@ import shutil
 import statistics
 import subprocess
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -667,6 +712,69 @@ def build(arch, hipcc, out):
            os.path.join(HERE, "bench.hip"), "-o", out]
     print("building:", " ".join(cmd), file=sys.stderr)
     subprocess.run(cmd, check=True)
+
+
+# Hardware counters for the cache test, and the CSV metric names they are
+# reported as, per wave per loop iteration.
+COUNTERS = {
+    "TCP_TCC_READ_REQ_sum": "l1_to_l2_reads_per_iter",  # L1 misses.
+    "TCC_HIT_sum": "l2_hits_per_iter",
+    "TCC_MISS_sum": "l2_misses_per_iter",
+}
+
+# Each cache test iteration reloads a 2 KiB footprint: 16 128-byte lines.
+LINES_PER_ITER = 16
+
+
+def run_counters(binary, args, workdir):
+    """Run the cache test under rocprofv3. Returns CSV rows in the same
+    long format as the benchmark's own output."""
+    manifest = os.path.join(workdir, "manifest.csv")
+    cmd = ["rocprofv3", "--pmc"] + list(COUNTERS) + [
+        "--kernel-include-regex", "cacheKernel",
+        "-d", workdir, "-o", "counters", "--output-format", "csv",
+        "--", binary, "--tests", "cache", "--reps", str(args.reps),
+        "--iters", str(args.iters), "--blocks", str(args.blocks),
+        "--manifest", manifest]
+    print("profiling:", " ".join(cmd), file=sys.stderr)
+    proc = subprocess.run(cmd, stdout=subprocess.DEVNULL,
+                          stderr=subprocess.PIPE, universal_newlines=True)
+    if proc.returncode != 0:
+        sys.stderr.write(proc.stderr)
+        sys.exit("error: rocprofv3 failed; rerun with --no-counters to skip "
+                 "the cache test")
+    found = [os.path.join(root, f) for root, _, files in os.walk(workdir)
+             for f in files if f.endswith("counter_collection.csv")]
+    if len(found) != 1:
+        sys.exit("error: expected one counter_collection.csv under {}, "
+                 "found {}".format(workdir, found))
+
+    # Counter values per dispatch, in dispatch order.
+    by_id = {}
+    for row in csv.DictReader(open(found[0])):
+        by_id.setdefault(int(row["Dispatch_Id"]), {})[row["Counter_Name"]] = \
+            float(row["Counter_Value"])
+    dispatches = [by_id[d] for d in sorted(by_id)]
+    # The manifest says which test each launch belongs to, in launch order.
+    launches = [row for row in csv.DictReader(open(manifest))
+                if row["kernel"] == "cacheKernel"]
+    if len(dispatches) != len(launches):
+        sys.exit("error: {} cacheKernel dispatches profiled but {} launched"
+                 .format(len(dispatches), len(launches)))
+
+    rows = []
+    for counters, launch in zip(dispatches, launches):
+        if int(launch["rep"]) < 0:
+            continue  # Warm-up launch.
+        per = int(launch["waves"]) * int(launch["ops_per_wave"])
+        for counter, metric in COUNTERS.items():
+            rows.append({"test": launch["test"],
+                         "instruction": launch["instruction"],
+                         "exec": launch["exec"],
+                         "aggressor": launch["aggressor"],
+                         "rep": launch["rep"], "metric": metric,
+                         "value": "{:.4f}".format(counters[counter] / per)})
+    return rows
 
 
 class Results:
@@ -761,32 +869,45 @@ def report(res, arch, device, rocm):
                          lines))
 
     # cache
-    for mem, desc in [("coarse", "coarse-grained (`hipMalloc`)"),
-                      ("fine", "fine-grained (`hipDeviceMallocFinegrained`)")]:
+    for mem in ["coarse", "fine"]:
         test = "cache[{}]".format(mem)
         bypass = "cache[{}+bypass-l1]".format(mem)
-        base = res.get(test, "none", "cycles")
-        rows = [("nothing (L1 hits)", test, "none"),
-                ("nothing, reloads bypass L1 with sc1 (L1-miss reference)",
-                 bypass, "none"),
+        rows = [("nothing", test, "none"),
                 ("`buffer_inv`", test, "buffer_inv"),
-                ("`buffer_inv sc0`", test, "buffer_inv sc0"),
-                ("`buffer_inv sc1`", test, "buffer_inv sc1"),
-                ("`buffer_inv`, reloads bypass L1 (L2 check)", bypass,
+                ("`buffer_inv sc1` (positive control)", test,
+                 "buffer_inv sc1"),
+                ("`buffer_inv`, then reloads that bypass L1 with sc1", bypass,
                  "buffer_inv")]
         lines = []
         for label, row_test, inst in rows:
-            val = res.get(row_test, inst, "cycles")
-            if val is not None and base:
-                lines.append([label, "{:.1f}".format(val), pct(val, base)])
-        out.append(table(
-            "L1/L2 invalidation, {} memory".format(mem),
-            "Per iteration: the instruction, then 8 reloads of a 2 KiB "
-            "footprint in {} memory and `s_waitcnt vmcnt(0)`. If the "
-            "instruction invalidated L1, its row would cost at least as much "
-            "as the L1-miss reference; the L2 check would go to memory if it "
-            "invalidated L2.".format(desc),
-            ["before the reload", "cycles/iter", "vs nothing"], lines))
+            reads = res.get(row_test, inst, "l1_to_l2_reads_per_iter")
+            hits = res.get(row_test, inst, "l2_hits_per_iter")
+            misses = res.get(row_test, inst, "l2_misses_per_iter")
+            if None in (reads, hits, misses):
+                continue
+            if row_test == bypass:
+                l1 = "n/a (reloads bypass L1)"
+            else:
+                l1 = "yes" if reads > LINES_PER_ITER / 2 else "no"
+            # L2 is only observed when the reloads reach it.
+            if reads > LINES_PER_ITER / 2:
+                l2 = "yes" if misses > LINES_PER_ITER / 2 else "no"
+            else:
+                l2 = "n/a (reloads hit L1)"
+            lines.append([label, "{:.2f}".format(reads), "{:.2f}".format(hits),
+                          "{:.2f}".format(misses), l1, l2])
+        if lines:
+            out.append(table(
+                "Cache invalidation, {} memory".format(mem),
+                "Hardware counters (rocprofv3) per wave per loop iteration. "
+                "Each iteration issues the instruction, then reloads a 2 KiB "
+                "footprint ({} 128-byte lines) in {}-grained memory. Plain "
+                "reloads hit L1 unless the instruction invalidated it; reloads "
+                "that bypass L1 hit L2 unless it invalidated L2. About 0.02 "
+                "per iteration is the warm-up spread over the run.".format(
+                    LINES_PER_ITER, mem),
+                ["before the reload", "L1→L2 reads", "L2 hits", "L2 misses",
+                 "L1 invalidated?", "L2 invalidated?"], lines))
 
     # contention
     for test, title, note, aggressors in [
@@ -824,6 +945,8 @@ def main():
     parser.add_argument("--csv", help="also write the raw CSV here")
     parser.add_argument("--no-build", action="store_true",
                         help="reuse an existing build")
+    parser.add_argument("--no-counters", action="store_true",
+                        help="skip the cache test (needs rocprofv3)")
     args = parser.parse_args()
 
     arch = args.arch or detect_arch()
@@ -836,205 +959,41 @@ def main():
         build(arch, hipcc, binary)
 
     proc = subprocess.run(
-        [binary, "--reps", str(args.reps), "--iters", str(args.iters),
-         "--blocks", str(args.blocks)],
+        [binary, "--tests", "vmcnt,issue,latency,contention", "--reps",
+         str(args.reps), "--iters", str(args.iters), "--blocks",
+         str(args.blocks)],
         check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         universal_newlines=True)
     sys.stderr.write(proc.stderr)
     device = re.search(r"device: (.*?) \(", proc.stderr)
     device = device.group(1) if device else "unknown device"
-    if args.csv:
-        with open(args.csv, "w") as f:
-            f.write(proc.stdout)
     rows = list(csv.DictReader(io.StringIO(proc.stdout)))
+
+    if args.no_counters:
+        print("skipping the cache test (--no-counters)", file=sys.stderr)
+    elif not shutil.which("rocprofv3"):
+        print("skipping the cache test: rocprofv3 not found in PATH",
+              file=sys.stderr)
+    else:
+        workdir = tempfile.mkdtemp(prefix="buffer-inv-counters-")
+        try:
+            rows += run_counters(binary, args, workdir)
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
+
+    if args.csv:
+        fields = ["test", "instruction", "exec", "aggressor", "rep", "metric",
+                  "value"]
+        with open(args.csv, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(rows)
     print(report(Results(rows), arch, device, rocm_version()))
 
 
 if __name__ == "__main__":
     main()
 BUFFER_INV_BENCH_EOF_RUN_PY
-cat > "$dir/counters.py" <<'BUFFER_INV_BENCH_EOF_COUNTERS_PY'
-#!/usr/bin/env python3
-"""Check cache invalidation directly with hardware counters (rocprofv3).
-
-Runs the benchmark under rocprofv3, collecting vector L1 (TCP) and L2 (TCC)
-counters for every cacheKernel launch, and prints, per cache test case, the
-counts per wave per loop iteration. This checks what the timing-based cache
-tables in run.py infer: whether the reloads hit L1, and whether the
-instruction before them invalidates L1 or L2.
-
-Needs ROCm with rocprofv3, plus what run.py needs.
-
-Usage:
-  ./counters.py                 # detect arch, build, profile, print tables
-  ./counters.py --arch gfx942   # override the detected arch
-  ./counters.py --keep DIR      # keep the rocprofv3 output and manifest in DIR
-"""
-
-import argparse
-import csv
-import os
-import shutil
-import statistics
-import subprocess
-import sys
-import tempfile
-
-import run  # Build helpers shared with run.py.
-
-COUNTERS = [
-    "TCP_TOTAL_CACHE_ACCESSES_sum",  # Vector L1 accesses.
-    "TCP_TCC_READ_REQ_sum",          # Reads sent from L1 to L2 (L1 misses).
-    "TCC_REQ_sum",                   # All L2 requests.
-    "TCC_HIT_sum",                   # L2 hits.
-    "TCC_MISS_sum",                  # L2 misses.
-]
-
-# Each loader wave reloads a 2 KiB footprint per iteration: 8 loads of 256
-# bytes, which is 16 128-byte cache lines.
-LINES_PER_ITER = 16
-
-
-def profile(binary, workdir, reps):
-    manifest = os.path.join(workdir, "manifest.csv")
-    cmd = ["rocprofv3", "--pmc"] + COUNTERS + [
-        "--kernel-include-regex", "cacheKernel",
-        "-d", workdir, "-o", "counters", "--output-format", "csv",
-        "--", binary, "--reps", str(reps), "--manifest", manifest]
-    print("profiling:", " ".join(cmd), file=sys.stderr)
-    proc = subprocess.run(cmd, stdout=subprocess.DEVNULL,
-                          stderr=subprocess.PIPE, universal_newlines=True)
-    if proc.returncode != 0:
-        sys.stderr.write(proc.stderr)
-        sys.exit("error: rocprofv3 failed (if it reports that the counters "
-                 "don't fit in one pass, collect fewer counters at a time)")
-    found = []
-    for root, _, files in os.walk(workdir):
-        found += [os.path.join(root, f) for f in files
-                  if f.endswith("counter_collection.csv")]
-    if len(found) != 1:
-        sys.exit("error: expected one counter_collection.csv under {}, "
-                 "found {}".format(workdir, found))
-    return found[0], manifest
-
-
-def load_dispatches(path):
-    """Counter values per dispatch, in dispatch order."""
-    by_id = {}
-    for row in csv.DictReader(open(path)):
-        by_id.setdefault(int(row["Dispatch_Id"]), {})[row["Counter_Name"]] = \
-            float(row["Counter_Value"])
-    return [by_id[d] for d in sorted(by_id)]
-
-
-def load_launches(path, kernel):
-    return [row for row in csv.DictReader(open(path))
-            if row["kernel"] == kernel]
-
-
-def per_iter(counters, launch):
-    """Counts per wave per loop iteration for one launch."""
-    waves = int(launch["waves"])
-    iters = int(launch["ops_per_wave"])
-    return {name: counters[name] / (waves * iters) for name in COUNTERS}
-
-
-def report(results):
-    out = ["## Cache invalidation, measured with hardware counters", "",
-           "rocprofv3 counters per `cacheKernel` launch, divided by "
-           "(loader waves × iterations): counts per wave per loop iteration. "
-           "Each iteration reloads a 2 KiB footprint, which is "
-           "{} 128-byte lines. The warm-up loads before the timed loop add "
-           "about {} ÷ iterations, which is negligible. Medians over reps."
-           .format(LINES_PER_ITER, LINES_PER_ITER), ""]
-    for mem in ["coarse", "fine"]:
-        test, bypass = "cache[{}]".format(mem), "cache[{}+bypass-l1]".format(mem)
-        rows = [("nothing", test, "none"),
-                ("nothing, reloads bypass L1 with sc1", bypass, "none"),
-                ("`buffer_inv`", test, "buffer_inv"),
-                ("`buffer_inv sc0`", test, "buffer_inv sc0"),
-                ("`buffer_inv sc1`", test, "buffer_inv sc1"),
-                ("`buffer_inv`, reloads bypass L1 (L2 check)", bypass,
-                 "buffer_inv")]
-        header = ["before the reload", "L1 accesses", "L1→L2 reads",
-                  "L2 requests", "L2 hits", "L2 misses", "L1 invalidated?",
-                  "L2 invalidated?"]
-        lines = []
-        for label, row_test, inst in rows:
-            c = results.get((row_test, inst))
-            if c is None:
-                continue
-            reads = c["TCP_TCC_READ_REQ_sum"]
-            misses = c["TCC_MISS_sum"]
-            if row_test == bypass:
-                # The reloads skip L1 by design, so L1 can't be judged here.
-                l1 = "n/a (bypassed)"
-            else:
-                l1 = "yes" if reads > LINES_PER_ITER / 2 else "no"
-            # If L2 lost the footprint, the reloads that reach L2 would miss.
-            l2 = ("yes" if misses > LINES_PER_ITER / 2 else
-                  "no" if reads > LINES_PER_ITER / 2 else
-                  "n/a (reloads hit L1)")
-            lines.append([label] + ["{:.2f}".format(c[n]) for n in COUNTERS]
-                         + [l1, l2])
-        out += ["### {} memory".format(mem.capitalize()), "",
-                "| " + " | ".join(header) + " |",
-                "|" + "|".join("---" for _ in header) + "|"]
-        out += ["| " + " | ".join(line) + " |" for line in lines]
-        out.append("")
-    return "\n".join(out)
-
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--arch", help="offload arch (default: detect)")
-    parser.add_argument("--hipcc", help="hipcc binary (default: from PATH "
-                        "or $ROCM_PATH/bin)")
-    parser.add_argument("--reps", type=int, default=3)
-    parser.add_argument("--no-build", action="store_true",
-                        help="reuse an existing build")
-    parser.add_argument("--keep", metavar="DIR",
-                        help="keep the rocprofv3 output and manifest in DIR")
-    args = parser.parse_args()
-
-    if not shutil.which("rocprofv3"):
-        sys.exit("error: rocprofv3 not found in PATH")
-    arch = args.arch or run.detect_arch()
-    binary = os.path.join(run.HERE, "build", "bench-" + arch)
-    if not args.no_build:
-        hipcc = args.hipcc or run.find_tool("hipcc")
-        if not hipcc:
-            sys.exit("error: hipcc not found; pass --hipcc or set ROCM_PATH")
-        os.makedirs(os.path.dirname(binary), exist_ok=True)
-        run.build(arch, hipcc, binary)
-
-    workdir = args.keep or tempfile.mkdtemp(prefix="buffer-inv-counters-")
-    os.makedirs(workdir, exist_ok=True)
-    try:
-        counter_csv, manifest = profile(binary, workdir, args.reps)
-        dispatches = load_dispatches(counter_csv)
-        launches = load_launches(manifest, "cacheKernel")
-        if len(dispatches) != len(launches):
-            sys.exit("error: {} cacheKernel dispatches profiled but {} "
-                     "launched".format(len(dispatches), len(launches)))
-        groups = {}
-        for counters, launch in zip(dispatches, launches):
-            if int(launch["rep"]) < 0:
-                continue  # Warm-up launch.
-            key = (launch["test"], launch["instruction"])
-            groups.setdefault(key, []).append(per_iter(counters, launch))
-        results = {key: {n: statistics.median(r[n] for r in reps)
-                         for n in COUNTERS}
-                   for key, reps in groups.items()}
-        print(report(results))
-    finally:
-        if not args.keep:
-            shutil.rmtree(workdir, ignore_errors=True)
-
-
-if __name__ == "__main__":
-    main()
-BUFFER_INV_BENCH_EOF_COUNTERS_PY
 cat > "$dir/README.md" <<'BUFFER_INV_BENCH_EOF_README_MD'
 # buffer_inv microbenchmarks
 
@@ -1043,13 +1002,15 @@ Measures `buffer_inv` with no `sc` bits (`BUFFER_INV 0` in MIR) on gfx942
 whether it invalidates caches. Where it matters, each test is run with all
 lanes active and with EXEC=0.
 
-Requirements: ROCm (`hipcc`, `rocminfo`) and Python 3.6+. Nothing else.
+Requirements: ROCm (`hipcc`, `rocminfo`, and `rocprofv3` for the cache test)
+and Python 3.6+. Nothing else.
 
 ```
 ./run.py                    # detect arch, build, run, print markdown tables
 ./run.py --arch gfx942      # override the detected arch
 ./run.py --csv raw.csv      # also save the raw per-rep CSV
 ./run.py --reps 10 --iters 4096
+./run.py --no-counters      # skip the cache test (no rocprofv3 needed)
 ```
 
 If ROCm isn't in `/opt/rocm`, set `ROCM_PATH`.
@@ -1062,31 +1023,22 @@ Tests (all instruction sequences are inline asm, so they are exact):
 - **issue**: 16 back-to-back instructions per iteration. All lanes and EXEC=0.
 - **latency**: each instruction followed by `s_waitcnt vmcnt(0)`. All lanes and
   EXEC=0.
-- **cache**: whether the instruction invalidates L1 or L2, calibrated against
-  reloads that bypass L1 with `sc1` loads. Coarse- and fine-grained memory.
+- **cache**: whether the instruction invalidates L1 or L2, measured with
+  hardware counters. The kernel issues the instruction and then reloads a small
+  footprint, and `run.py` runs it under `rocprofv3` to count L1→L2 reads and
+  L2 hits and misses. `buffer_inv sc1` is the positive control (it invalidates
+  L1). Coarse- and fine-grained memory.
 - **contention**: loader waves on the same CU while other waves issue the
   instruction back-to-back, or paced with `s_sleep 1`.
 
-## Checking the cache results with hardware counters
-
-The cache test infers L1/L2 hits from timing. `counters.py` checks it
-directly: it runs the benchmark under `rocprofv3`, collects vector L1 (TCP)
-and L2 (TCC) counters for each cache test launch, and reports them per wave
-per loop iteration with an "invalidated?" verdict for L1 and L2.
-
-```
-./counters.py                 # needs rocprofv3 in PATH
-./counters.py --arch gfx942
-```
-
-`bench.hip --manifest FILE` writes one line per timed launch so the profiler's
-per-dispatch records can be matched to tests.
+`bench.hip --tests LIST` runs a subset of the tests, and `--manifest FILE`
+writes one line per kernel launch so profiler records can be matched to tests.
 
 ## Checking edits to bench.hip
 
 `bash verify.sh` (or `ARCH=gfx942 bash verify.sh`) compares the GPU machine
 code of the working copy against the last commit.
 BUFFER_INV_BENCH_EOF_README_MD
-chmod +x "$dir/run.py" "$dir/counters.py"
+chmod +x "$dir/run.py"
 # Run from the caller's directory so relative paths (e.g. --csv) resolve there.
 exec python3 "$dir/run.py" "$@"

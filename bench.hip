@@ -8,7 +8,9 @@
 //   vmcnt       Does the instruction increment VM_CNT? Read from HW_REG_IB_STS.
 //   issue       Cost of issuing it back-to-back.
 //   latency     Cost of issuing it and waiting with `s_waitcnt vmcnt(0)`.
-//   cache       Does it invalidate the vector L1 or L2?
+//   cache       Does it invalidate the vector L1 or L2? Untimed: run.py reads
+//               L1 (TCP) and L2 (TCC) hardware counters for these launches
+//               with rocprofv3.
 //   contention  Does it slow the loads of other waves on the same CU?
 //
 // All measured sequences are inline asm, so the instruction stream is exact.
@@ -338,20 +340,31 @@ __device__ __forceinline__ void loadFootprint(const unsigned *Base) {
     asm volatile("" ::"v"(V[K]));
 }
 
-// cache: reload an L1-resident footprint each iteration, with instruction I
-// issued before the reload. If I invalidates L1, the reloads miss and the
-// iteration gets slower; the BypassL1 variant (sc1 loads) is the L1-miss
-// reference. With BypassL1 and I = buffer_inv, the reloads hit L2, so this
-// also checks whether buffer_inv invalidates L2.
-//
-// contention: the same loader loop with I = NONE, while other waves of the
+// cache: the access pattern for checking, with hardware counters, whether
+// instruction I invalidates L1 or L2. Not timed. One wave per block: warm the
+// wave's 2 KiB footprint, then each iteration issue I and reload the
+// footprint. With plain loads the reloads hit L1, unless I invalidated it.
+// With BypassL1 (sc1 loads) the reloads skip L1 and hit L2, unless I
+// invalidated L2.
+template <int I, bool BypassL1>
+__global__ void cacheKernel(const unsigned *Buf, int Iters) {
+  const unsigned *Base = Buf + (size_t)blockIdx.x * DwordsPerWave;
+  loadFootprint(Base); // Warm L1 and L2.
+  for (int It = 0; It < Iters; ++It) {
+    op<I>();
+    loadFootprint<BypassL1>(Base);
+  }
+}
+
+// contention: the first LoaderWavesPerBlock waves of each block reload their
+// L1-resident footprint each iteration and are timed. The other waves of the
 // same block (and therefore the same CU) issue Aggressor in a loop. Paced
 // aggressors follow each instruction with `s_sleep 1` (about 64 cycles).
 // Pacing is a template parameter so the unpaced loop is truly back-to-back.
-template <int I, int Aggressor, bool Paced, bool BypassL1>
-__global__ void cacheKernel(unsigned long long *Cycles, unsigned long long *Real,
-                            const unsigned *Buf, int Iters,
-                            int LoaderWavesPerBlock) {
+template <int Aggressor, bool Paced>
+__global__ void contentionKernel(unsigned long long *Cycles,
+                                 unsigned long long *Real, const unsigned *Buf,
+                                 int Iters, int LoaderWavesPerBlock) {
   int Wave = threadIdx.x / warpSize;
   if (Wave >= LoaderWavesPerBlock) {
     // Aggressor wave: keep issuing for longer than the loaders run.
@@ -373,10 +386,8 @@ __global__ void cacheKernel(unsigned long long *Cycles, unsigned long long *Real
 
   Timer T;
   T.start();
-  for (int It = 0; It < Iters; ++It) {
-    op<I>();
-    loadFootprint<BypassL1>(Base);
-  }
+  for (int It = 0; It < Iters; ++It)
+    loadFootprint(Base);
   T.stop(Cycles, Real, GlobalWave);
 }
 
@@ -388,11 +399,18 @@ struct Options {
   int Reps = 5;
   int Iters = 1024;
   int Blocks = 0; // 0 = number of CUs.
+  // Comma-separated tests to run.
+  std::string Tests = "vmcnt,issue,latency,cache,contention";
 };
 
-// With --manifest, one line per timed kernel launch, in launch order, so a
-// profiler's per-dispatch records (e.g. rocprofv3 hardware counters) can be
-// matched to tests. counters.py uses this.
+static bool runs(const Options &O, const char *Test) {
+  std::string List = "," + O.Tests + ",";
+  return List.find(std::string(",") + Test + ",") != std::string::npos;
+}
+
+// With --manifest, one line per kernel launch, in launch order, so a
+// profiler's per-dispatch records (rocprofv3 hardware counters) can be matched
+// to tests. run.py uses this for the cache test.
 static FILE *Manifest = nullptr;
 
 struct TestId {
@@ -470,13 +488,25 @@ template <int I, int E> static void runLatency(const Options &O) {
            });
 }
 
-template <int I, int Aggressor, bool Paced = false, bool BypassL1 = false>
-static void runCache(const char *Test, const Options &O, const unsigned *Buf,
-                     int LoaderWaves, int TotalWaves) {
+template <int I, bool BypassL1>
+static void runCache(const char *Test, const Options &O, const unsigned *Buf) {
+  TestId Id{"cacheKernel", Test, I, EXEC_ALL, NONE};
+  for (int Rep = -1; Rep < O.Reps; ++Rep) { // Rep -1 is the warm-up launch.
+    logLaunch(Id, Rep, O.Blocks, O.Iters);
+    cacheKernel<I, BypassL1><<<O.Blocks, 64>>>(Buf, O.Iters);
+    HIP_CHECK(hipGetLastError());
+    HIP_CHECK(hipDeviceSynchronize());
+  }
+}
+
+template <int Aggressor, bool Paced = false>
+static void runContention(const char *Test, const Options &O,
+                          const unsigned *Buf, int LoaderWaves,
+                          int TotalWaves) {
   int B = O.Blocks;
-  runTimed({"cacheKernel", Test, I, EXEC_ALL, Aggressor}, B * LoaderWaves, O.Iters, O,
-           [&](auto *C, auto *R) {
-             cacheKernel<I, Aggressor, Paced, BypassL1>
+  runTimed({"contentionKernel", Test, NONE, EXEC_ALL, Aggressor},
+           B * LoaderWaves, O.Iters, O, [&](auto *C, auto *R) {
+             contentionKernel<Aggressor, Paced>
                  <<<B, 64 * TotalWaves>>>(C, R, Buf, O.Iters, LoaderWaves);
            });
 }
@@ -490,6 +520,8 @@ int main(int Argc, char **Argv) {
       O.Iters = atoi(Argv[++A]);
     else if (!strcmp(Argv[A], "--blocks") && A + 1 < Argc)
       O.Blocks = atoi(Argv[++A]);
+    else if (!strcmp(Argv[A], "--tests") && A + 1 < Argc)
+      O.Tests = Argv[++A];
     else if (!strcmp(Argv[A], "--manifest") && A + 1 < Argc) {
       Manifest = fopen(Argv[++A], "w");
       if (!Manifest) {
@@ -501,6 +533,7 @@ int main(int Argc, char **Argv) {
     } else {
       fprintf(stderr,
               "usage: %s [--reps N] [--iters N] [--blocks N] "
+              "[--tests vmcnt,issue,latency,cache,contention] "
               "[--manifest FILE]\n",
               Argv[0]);
       return 2;
@@ -523,26 +556,32 @@ int main(int Argc, char **Argv) {
 
   // vmcnt: buffer_inv with all lanes and with EXEC=0, against s_nop (never
   // counted) and global_load (always counted).
-  runVmcnt<NOP, EXEC_ALL>(O.Blocks, O.Reps);
-  runVmcnt<NOP, EXEC_ZERO>(O.Blocks, O.Reps);
-  runVmcnt<INV, EXEC_ALL>(O.Blocks, O.Reps);
-  runVmcnt<INV, EXEC_ZERO>(O.Blocks, O.Reps);
-  runVmcnt<LOAD, EXEC_ALL>(O.Blocks, O.Reps);
-  runVmcnt<LOAD, EXEC_ZERO>(O.Blocks, O.Reps);
+  if (runs(O, "vmcnt")) {
+    runVmcnt<NOP, EXEC_ALL>(O.Blocks, O.Reps);
+    runVmcnt<NOP, EXEC_ZERO>(O.Blocks, O.Reps);
+    runVmcnt<INV, EXEC_ALL>(O.Blocks, O.Reps);
+    runVmcnt<INV, EXEC_ZERO>(O.Blocks, O.Reps);
+    runVmcnt<LOAD, EXEC_ALL>(O.Blocks, O.Reps);
+    runVmcnt<LOAD, EXEC_ZERO>(O.Blocks, O.Reps);
+  }
 
   // issue and latency: buffer_inv with all lanes and with EXEC=0, against
   // s_nop and buffer_inv sc0. Latency also reports `none` (only the wait).
-  runIssue<NOP, EXEC_ALL>(O);
-  runIssue<INV, EXEC_ALL>(O);
-  runIssue<INV, EXEC_ZERO>(O);
-  runIssue<INV_SC0, EXEC_ALL>(O);
-  runLatency<NONE, EXEC_ALL>(O);
-  runLatency<NOP, EXEC_ALL>(O);
-  runLatency<INV, EXEC_ALL>(O);
-  runLatency<INV, EXEC_ZERO>(O);
-  runLatency<INV_SC0, EXEC_ALL>(O);
+  if (runs(O, "issue")) {
+    runIssue<NOP, EXEC_ALL>(O);
+    runIssue<INV, EXEC_ALL>(O);
+    runIssue<INV, EXEC_ZERO>(O);
+    runIssue<INV_SC0, EXEC_ALL>(O);
+  }
+  if (runs(O, "latency")) {
+    runLatency<NONE, EXEC_ALL>(O);
+    runLatency<NOP, EXEC_ALL>(O);
+    runLatency<INV, EXEC_ALL>(O);
+    runLatency<INV, EXEC_ZERO>(O);
+    runLatency<INV_SC0, EXEC_ALL>(O);
+  }
 
-  // cache: one loader wave per block. contention: four loader waves plus four
+  // cache: one wave per block. contention: four loader waves plus four
   // aggressor waves per block.
   constexpr int ContentionLoaders = 4, ContentionWaves = 8;
   size_t Dwords = (size_t)O.Blocks * ContentionLoaders * DwordsPerWave;
@@ -555,30 +594,32 @@ int main(int Argc, char **Argv) {
                                   hipDeviceMallocFinegrained));
   HIP_CHECK(hipMemset(Fine, 0, Dwords * sizeof(unsigned)));
 
-  struct Mem {
-    const char *Test, *BypassTest;
-    const unsigned *Buf;
-  };
-  for (const Mem &M : {Mem{"cache[coarse]", "cache[coarse+bypass-l1]", Coarse},
-                       Mem{"cache[fine]", "cache[fine+bypass-l1]", Fine}}) {
-    runCache<NONE, NONE>(M.Test, O, M.Buf, 1, 1);
-    runCache<NONE, NONE, false, true>(M.BypassTest, O, M.Buf, 1, 1);
-    runCache<INV, NONE>(M.Test, O, M.Buf, 1, 1);
-    runCache<INV, NONE, false, true>(M.BypassTest, O, M.Buf, 1, 1);
-    runCache<INV_SC0, NONE>(M.Test, O, M.Buf, 1, 1);
-    runCache<INV_SC1, NONE>(M.Test, O, M.Buf, 1, 1);
+  // cache: plain reloads alone (they should hit L1), after buffer_inv (does it
+  // invalidate L1?), after buffer_inv sc1 (positive control: it does), and
+  // L1-bypassing reloads after buffer_inv (does it invalidate L2?).
+  if (runs(O, "cache")) {
+    runCache<NONE, false>("cache[coarse]", O, Coarse);
+    runCache<INV, false>("cache[coarse]", O, Coarse);
+    runCache<INV_SC1, false>("cache[coarse]", O, Coarse);
+    runCache<INV, true>("cache[coarse+bypass-l1]", O, Coarse);
+    runCache<NONE, false>("cache[fine]", O, Fine);
+    runCache<INV, false>("cache[fine]", O, Fine);
+    runCache<INV_SC1, false>("cache[fine]", O, Fine);
+    runCache<INV, true>("cache[fine+bypass-l1]", O, Fine);
   }
 
-  runCache<NONE, NOP>("contention", O, Coarse, ContentionLoaders,
-                      ContentionWaves);
-  runCache<NONE, INV>("contention", O, Coarse, ContentionLoaders,
-                      ContentionWaves);
-  runCache<NONE, INV_SC0>("contention", O, Coarse, ContentionLoaders,
-                          ContentionWaves);
-  runCache<NONE, NOP, true>("contention-paced", O, Coarse, ContentionLoaders,
-                            ContentionWaves);
-  runCache<NONE, INV, true>("contention-paced", O, Coarse, ContentionLoaders,
-                            ContentionWaves);
+  if (runs(O, "contention")) {
+    runContention<NOP>("contention", O, Coarse, ContentionLoaders,
+                       ContentionWaves);
+    runContention<INV>("contention", O, Coarse, ContentionLoaders,
+                       ContentionWaves);
+    runContention<INV_SC0>("contention", O, Coarse, ContentionLoaders,
+                           ContentionWaves);
+    runContention<NOP, true>("contention-paced", O, Coarse, ContentionLoaders,
+                             ContentionWaves);
+    runContention<INV, true>("contention-paced", O, Coarse, ContentionLoaders,
+                             ContentionWaves);
+  }
 
   HIP_CHECK(hipFree(Fine));
   HIP_CHECK(hipFree(Coarse));

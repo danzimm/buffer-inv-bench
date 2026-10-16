@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """Build and run the buffer_inv microbenchmarks, then print markdown tables.
 
-Only needs Python 3.6+ and ROCm (hipcc). Works on any wave64 gfx9 GPU with
-buffer_inv, e.g. MI300 (gfx942) and MI350 (gfx950).
+Only needs Python 3.6+ and ROCm (hipcc, plus rocprofv3 for the cache test).
+Works on any wave64 gfx9 GPU with buffer_inv, e.g. MI300 (gfx942) and MI350
+(gfx950).
+
+The timed tests run first. Then the cache test runs under rocprofv3, which
+collects vector L1 (TCP) and L2 (TCC) hardware counters for each launch.
 
 Usage:
   ./run.py                      # detect arch, build, run, print tables
   ./run.py --arch gfx942        # override the detected arch
   ./run.py --csv out.csv        # also save the raw per-rep CSV
+  ./run.py --no-counters        # skip the rocprofv3 cache test
 """
 
 import argparse
@@ -19,6 +24,7 @@ import shutil
 import statistics
 import subprocess
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -67,6 +73,69 @@ def build(arch, hipcc, out):
            os.path.join(HERE, "bench.hip"), "-o", out]
     print("building:", " ".join(cmd), file=sys.stderr)
     subprocess.run(cmd, check=True)
+
+
+# Hardware counters for the cache test, and the CSV metric names they are
+# reported as, per wave per loop iteration.
+COUNTERS = {
+    "TCP_TCC_READ_REQ_sum": "l1_to_l2_reads_per_iter",  # L1 misses.
+    "TCC_HIT_sum": "l2_hits_per_iter",
+    "TCC_MISS_sum": "l2_misses_per_iter",
+}
+
+# Each cache test iteration reloads a 2 KiB footprint: 16 128-byte lines.
+LINES_PER_ITER = 16
+
+
+def run_counters(binary, args, workdir):
+    """Run the cache test under rocprofv3. Returns CSV rows in the same
+    long format as the benchmark's own output."""
+    manifest = os.path.join(workdir, "manifest.csv")
+    cmd = ["rocprofv3", "--pmc"] + list(COUNTERS) + [
+        "--kernel-include-regex", "cacheKernel",
+        "-d", workdir, "-o", "counters", "--output-format", "csv",
+        "--", binary, "--tests", "cache", "--reps", str(args.reps),
+        "--iters", str(args.iters), "--blocks", str(args.blocks),
+        "--manifest", manifest]
+    print("profiling:", " ".join(cmd), file=sys.stderr)
+    proc = subprocess.run(cmd, stdout=subprocess.DEVNULL,
+                          stderr=subprocess.PIPE, universal_newlines=True)
+    if proc.returncode != 0:
+        sys.stderr.write(proc.stderr)
+        sys.exit("error: rocprofv3 failed; rerun with --no-counters to skip "
+                 "the cache test")
+    found = [os.path.join(root, f) for root, _, files in os.walk(workdir)
+             for f in files if f.endswith("counter_collection.csv")]
+    if len(found) != 1:
+        sys.exit("error: expected one counter_collection.csv under {}, "
+                 "found {}".format(workdir, found))
+
+    # Counter values per dispatch, in dispatch order.
+    by_id = {}
+    for row in csv.DictReader(open(found[0])):
+        by_id.setdefault(int(row["Dispatch_Id"]), {})[row["Counter_Name"]] = \
+            float(row["Counter_Value"])
+    dispatches = [by_id[d] for d in sorted(by_id)]
+    # The manifest says which test each launch belongs to, in launch order.
+    launches = [row for row in csv.DictReader(open(manifest))
+                if row["kernel"] == "cacheKernel"]
+    if len(dispatches) != len(launches):
+        sys.exit("error: {} cacheKernel dispatches profiled but {} launched"
+                 .format(len(dispatches), len(launches)))
+
+    rows = []
+    for counters, launch in zip(dispatches, launches):
+        if int(launch["rep"]) < 0:
+            continue  # Warm-up launch.
+        per = int(launch["waves"]) * int(launch["ops_per_wave"])
+        for counter, metric in COUNTERS.items():
+            rows.append({"test": launch["test"],
+                         "instruction": launch["instruction"],
+                         "exec": launch["exec"],
+                         "aggressor": launch["aggressor"],
+                         "rep": launch["rep"], "metric": metric,
+                         "value": "{:.4f}".format(counters[counter] / per)})
+    return rows
 
 
 class Results:
@@ -161,32 +230,45 @@ def report(res, arch, device, rocm):
                          lines))
 
     # cache
-    for mem, desc in [("coarse", "coarse-grained (`hipMalloc`)"),
-                      ("fine", "fine-grained (`hipDeviceMallocFinegrained`)")]:
+    for mem in ["coarse", "fine"]:
         test = "cache[{}]".format(mem)
         bypass = "cache[{}+bypass-l1]".format(mem)
-        base = res.get(test, "none", "cycles")
-        rows = [("nothing (L1 hits)", test, "none"),
-                ("nothing, reloads bypass L1 with sc1 (L1-miss reference)",
-                 bypass, "none"),
+        rows = [("nothing", test, "none"),
                 ("`buffer_inv`", test, "buffer_inv"),
-                ("`buffer_inv sc0`", test, "buffer_inv sc0"),
-                ("`buffer_inv sc1`", test, "buffer_inv sc1"),
-                ("`buffer_inv`, reloads bypass L1 (L2 check)", bypass,
+                ("`buffer_inv sc1` (positive control)", test,
+                 "buffer_inv sc1"),
+                ("`buffer_inv`, then reloads that bypass L1 with sc1", bypass,
                  "buffer_inv")]
         lines = []
         for label, row_test, inst in rows:
-            val = res.get(row_test, inst, "cycles")
-            if val is not None and base:
-                lines.append([label, "{:.1f}".format(val), pct(val, base)])
-        out.append(table(
-            "L1/L2 invalidation, {} memory".format(mem),
-            "Per iteration: the instruction, then 8 reloads of a 2 KiB "
-            "footprint in {} memory and `s_waitcnt vmcnt(0)`. If the "
-            "instruction invalidated L1, its row would cost at least as much "
-            "as the L1-miss reference; the L2 check would go to memory if it "
-            "invalidated L2.".format(desc),
-            ["before the reload", "cycles/iter", "vs nothing"], lines))
+            reads = res.get(row_test, inst, "l1_to_l2_reads_per_iter")
+            hits = res.get(row_test, inst, "l2_hits_per_iter")
+            misses = res.get(row_test, inst, "l2_misses_per_iter")
+            if None in (reads, hits, misses):
+                continue
+            if row_test == bypass:
+                l1 = "n/a (reloads bypass L1)"
+            else:
+                l1 = "yes" if reads > LINES_PER_ITER / 2 else "no"
+            # L2 is only observed when the reloads reach it.
+            if reads > LINES_PER_ITER / 2:
+                l2 = "yes" if misses > LINES_PER_ITER / 2 else "no"
+            else:
+                l2 = "n/a (reloads hit L1)"
+            lines.append([label, "{:.2f}".format(reads), "{:.2f}".format(hits),
+                          "{:.2f}".format(misses), l1, l2])
+        if lines:
+            out.append(table(
+                "Cache invalidation, {} memory".format(mem),
+                "Hardware counters (rocprofv3) per wave per loop iteration. "
+                "Each iteration issues the instruction, then reloads a 2 KiB "
+                "footprint ({} 128-byte lines) in {}-grained memory. Plain "
+                "reloads hit L1 unless the instruction invalidated it; reloads "
+                "that bypass L1 hit L2 unless it invalidated L2. About 0.02 "
+                "per iteration is the warm-up spread over the run.".format(
+                    LINES_PER_ITER, mem),
+                ["before the reload", "L1→L2 reads", "L2 hits", "L2 misses",
+                 "L1 invalidated?", "L2 invalidated?"], lines))
 
     # contention
     for test, title, note, aggressors in [
@@ -224,6 +306,8 @@ def main():
     parser.add_argument("--csv", help="also write the raw CSV here")
     parser.add_argument("--no-build", action="store_true",
                         help="reuse an existing build")
+    parser.add_argument("--no-counters", action="store_true",
+                        help="skip the cache test (needs rocprofv3)")
     args = parser.parse_args()
 
     arch = args.arch or detect_arch()
@@ -236,17 +320,35 @@ def main():
         build(arch, hipcc, binary)
 
     proc = subprocess.run(
-        [binary, "--reps", str(args.reps), "--iters", str(args.iters),
-         "--blocks", str(args.blocks)],
+        [binary, "--tests", "vmcnt,issue,latency,contention", "--reps",
+         str(args.reps), "--iters", str(args.iters), "--blocks",
+         str(args.blocks)],
         check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         universal_newlines=True)
     sys.stderr.write(proc.stderr)
     device = re.search(r"device: (.*?) \(", proc.stderr)
     device = device.group(1) if device else "unknown device"
-    if args.csv:
-        with open(args.csv, "w") as f:
-            f.write(proc.stdout)
     rows = list(csv.DictReader(io.StringIO(proc.stdout)))
+
+    if args.no_counters:
+        print("skipping the cache test (--no-counters)", file=sys.stderr)
+    elif not shutil.which("rocprofv3"):
+        print("skipping the cache test: rocprofv3 not found in PATH",
+              file=sys.stderr)
+    else:
+        workdir = tempfile.mkdtemp(prefix="buffer-inv-counters-")
+        try:
+            rows += run_counters(binary, args, workdir)
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
+
+    if args.csv:
+        fields = ["test", "instruction", "exec", "aggressor", "rep", "metric",
+                  "value"]
+        with open(args.csv, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(rows)
     print(report(Results(rows), arch, device, rocm_version()))
 
 
