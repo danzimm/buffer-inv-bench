@@ -69,38 +69,41 @@ enum Exec { EXEC_ALL, EXEC_ZERO };
 
 static const char *execName(int E) { return E == EXEC_ZERO ? "0" : "all"; }
 
-// Invokes EMIT with the asm string for instruction I. LOAD is excluded because
-// it needs operands; the vmcnt test handles it separately.
-#define FOR_INST(I, EMIT)                                                      \
-  if constexpr (I == NONE)                                                     \
-    EMIT("");                                                                  \
-  else if constexpr (I == NOP)                                                 \
-    EMIT("s_nop 0");                                                           \
-  else if constexpr (I == INV)                                                 \
-    EMIT("buffer_inv");                                                        \
-  else if constexpr (I == INV_SC0)                                             \
-    EMIT("buffer_inv sc0");                                                    \
-  else if constexpr (I == INV_SC1)                                             \
-    EMIT("buffer_inv sc1");                                                    \
-  else                                                                         \
-    static_assert(I != LOAD, "LOAD needs operands")
+// Dependent false, for the static_assert that ends each if-constexpr chain.
+template <int> constexpr bool Unsupported = false;
 
-// Wrap the measured instructions in EXEC save/restore. Both conditions use
-// the same number of instructions so their costs are comparable; EXEC_ALL
-// just writes EXEC back unchanged. The asm statement must provide a 64-bit
-// SGPR operand named `save`.
-#define EXEC_BEGIN_ALL "s_mov_b64 %[save], exec\n\ts_mov_b64 exec, %[save]\n\t"
-#define EXEC_BEGIN_ZERO "s_mov_b64 %[save], exec\n\ts_mov_b64 exec, 0\n\t"
-#define EXEC_END "\n\ts_mov_b64 exec, %[save]"
+// Several tests wrap the measured instructions in an EXEC save/restore:
+//
+//   s_mov_b64 save, exec
+//   s_mov_b64 exec, 0         ; for EXEC=0; `s_mov_b64 exec, save` for all lanes
+//   <measured instructions>
+//   s_mov_b64 exec, save
+//
+// The all-lanes form writes EXEC back unchanged, so both forms run the same
+// number of instructions and their costs are comparable. The whole sequence
+// is one asm statement, so the compiler cannot place its own instructions
+// while EXEC is 0.
 
 __device__ __forceinline__ void waitVmcnt0() {
   asm volatile("s_waitcnt vmcnt(0)" ::: "memory");
 }
 
-#define SINGLE(OP) asm volatile(OP ::: "memory")
-
 // One instruction, all lanes active.
-template <int I> __device__ __forceinline__ void op() { FOR_INST(I, SINGLE); }
+template <int I> __device__ __forceinline__ void op() {
+  if constexpr (I == NONE) {
+    // Nothing.
+  } else if constexpr (I == NOP) {
+    asm volatile("s_nop 0" ::: "memory");
+  } else if constexpr (I == INV) {
+    asm volatile("buffer_inv" ::: "memory");
+  } else if constexpr (I == INV_SC0) {
+    asm volatile("buffer_inv sc0" ::: "memory");
+  } else if constexpr (I == INV_SC1) {
+    asm volatile("buffer_inv sc1" ::: "memory");
+  } else {
+    static_assert(Unsupported<I>, "unsupported instruction");
+  }
+}
 
 //===----------------------------------------------------------------------===//
 // Timing
@@ -151,31 +154,92 @@ __global__ void vmcntKernel(unsigned *Before, unsigned *After,
   const unsigned *Addr = Buf + (size_t)GlobalWave * StrideDwords;
   unsigned Dst, Dst2, B, A;
   unsigned long long Save;
-#define VMCNT(BEGIN, OP)                                                       \
-  asm volatile("s_waitcnt vmcnt(0)\n\t"                                        \
-               "global_load_dword %[dst], %[addr], off sc0 sc1\n\t"            \
-               "s_getreg_b32 %[before], hwreg(HW_REG_IB_STS)\n\t" BEGIN OP     \
-                   EXEC_END "\n\t"                                             \
-               "s_getreg_b32 %[after], hwreg(HW_REG_IB_STS)\n\t"               \
-               "s_waitcnt vmcnt(0)"                                            \
-               : [dst] "=&v"(Dst), [dst2] "=&v"(Dst2), [before] "=&s"(B),      \
-                 [after] "=&s"(A), [save] "=&s"(Save)                          \
-               : [addr] "v"(Addr)                                              \
-               : "memory")
-#define VMCNT_ALL(OP) VMCNT(EXEC_BEGIN_ALL, OP)
-#define VMCNT_ZERO(OP) VMCNT(EXEC_BEGIN_ZERO, OP)
-#define VMCNT_LOAD "global_load_dword %[dst2], %[addr], off offset:64 sc0 sc1"
-  if constexpr (E == EXEC_ZERO) {
-    if constexpr (I == LOAD)
-      VMCNT_ZERO(VMCNT_LOAD);
-    else
-      FOR_INST(I, VMCNT_ZERO);
-  } else {
-    if constexpr (I == LOAD)
-      VMCNT_ALL(VMCNT_LOAD);
-    else
-      FOR_INST(I, VMCNT_ALL);
-  }
+  if constexpr (I == NOP && E == EXEC_ALL)
+    asm volatile("s_waitcnt vmcnt(0)\n\t"
+                 "global_load_dword %[dst], %[addr], off sc0 sc1\n\t"
+                 "s_getreg_b32 %[before], hwreg(HW_REG_IB_STS)\n\t"
+                 "s_mov_b64 %[save], exec\n\t"
+                 "s_mov_b64 exec, %[save]\n\t"
+                 "s_nop 0\n\t"
+                 "s_mov_b64 exec, %[save]\n\t"
+                 "s_getreg_b32 %[after], hwreg(HW_REG_IB_STS)\n\t"
+                 "s_waitcnt vmcnt(0)"
+                 : [dst] "=&v"(Dst), [dst2] "=&v"(Dst2), [before] "=&s"(B),
+                   [after] "=&s"(A), [save] "=&s"(Save)
+                 : [addr] "v"(Addr)
+                 : "memory");
+  else if constexpr (I == NOP && E == EXEC_ZERO)
+    asm volatile("s_waitcnt vmcnt(0)\n\t"
+                 "global_load_dword %[dst], %[addr], off sc0 sc1\n\t"
+                 "s_getreg_b32 %[before], hwreg(HW_REG_IB_STS)\n\t"
+                 "s_mov_b64 %[save], exec\n\t"
+                 "s_mov_b64 exec, 0\n\t"
+                 "s_nop 0\n\t"
+                 "s_mov_b64 exec, %[save]\n\t"
+                 "s_getreg_b32 %[after], hwreg(HW_REG_IB_STS)\n\t"
+                 "s_waitcnt vmcnt(0)"
+                 : [dst] "=&v"(Dst), [dst2] "=&v"(Dst2), [before] "=&s"(B),
+                   [after] "=&s"(A), [save] "=&s"(Save)
+                 : [addr] "v"(Addr)
+                 : "memory");
+  else if constexpr (I == INV && E == EXEC_ALL)
+    asm volatile("s_waitcnt vmcnt(0)\n\t"
+                 "global_load_dword %[dst], %[addr], off sc0 sc1\n\t"
+                 "s_getreg_b32 %[before], hwreg(HW_REG_IB_STS)\n\t"
+                 "s_mov_b64 %[save], exec\n\t"
+                 "s_mov_b64 exec, %[save]\n\t"
+                 "buffer_inv\n\t"
+                 "s_mov_b64 exec, %[save]\n\t"
+                 "s_getreg_b32 %[after], hwreg(HW_REG_IB_STS)\n\t"
+                 "s_waitcnt vmcnt(0)"
+                 : [dst] "=&v"(Dst), [dst2] "=&v"(Dst2), [before] "=&s"(B),
+                   [after] "=&s"(A), [save] "=&s"(Save)
+                 : [addr] "v"(Addr)
+                 : "memory");
+  else if constexpr (I == INV && E == EXEC_ZERO)
+    asm volatile("s_waitcnt vmcnt(0)\n\t"
+                 "global_load_dword %[dst], %[addr], off sc0 sc1\n\t"
+                 "s_getreg_b32 %[before], hwreg(HW_REG_IB_STS)\n\t"
+                 "s_mov_b64 %[save], exec\n\t"
+                 "s_mov_b64 exec, 0\n\t"
+                 "buffer_inv\n\t"
+                 "s_mov_b64 exec, %[save]\n\t"
+                 "s_getreg_b32 %[after], hwreg(HW_REG_IB_STS)\n\t"
+                 "s_waitcnt vmcnt(0)"
+                 : [dst] "=&v"(Dst), [dst2] "=&v"(Dst2), [before] "=&s"(B),
+                   [after] "=&s"(A), [save] "=&s"(Save)
+                 : [addr] "v"(Addr)
+                 : "memory");
+  else if constexpr (I == LOAD && E == EXEC_ALL)
+    asm volatile("s_waitcnt vmcnt(0)\n\t"
+                 "global_load_dword %[dst], %[addr], off sc0 sc1\n\t"
+                 "s_getreg_b32 %[before], hwreg(HW_REG_IB_STS)\n\t"
+                 "s_mov_b64 %[save], exec\n\t"
+                 "s_mov_b64 exec, %[save]\n\t"
+                 "global_load_dword %[dst2], %[addr], off offset:64 sc0 sc1\n\t"
+                 "s_mov_b64 exec, %[save]\n\t"
+                 "s_getreg_b32 %[after], hwreg(HW_REG_IB_STS)\n\t"
+                 "s_waitcnt vmcnt(0)"
+                 : [dst] "=&v"(Dst), [dst2] "=&v"(Dst2), [before] "=&s"(B),
+                   [after] "=&s"(A), [save] "=&s"(Save)
+                 : [addr] "v"(Addr)
+                 : "memory");
+  else if constexpr (I == LOAD && E == EXEC_ZERO)
+    asm volatile("s_waitcnt vmcnt(0)\n\t"
+                 "global_load_dword %[dst], %[addr], off sc0 sc1\n\t"
+                 "s_getreg_b32 %[before], hwreg(HW_REG_IB_STS)\n\t"
+                 "s_mov_b64 %[save], exec\n\t"
+                 "s_mov_b64 exec, 0\n\t"
+                 "global_load_dword %[dst2], %[addr], off offset:64 sc0 sc1\n\t"
+                 "s_mov_b64 exec, %[save]\n\t"
+                 "s_getreg_b32 %[after], hwreg(HW_REG_IB_STS)\n\t"
+                 "s_waitcnt vmcnt(0)"
+                 : [dst] "=&v"(Dst), [dst2] "=&v"(Dst2), [before] "=&s"(B),
+                   [after] "=&s"(A), [save] "=&s"(Save)
+                 : [addr] "v"(Addr)
+                 : "memory");
+  else
+    static_assert(Unsupported<I>, "unsupported instruction or EXEC mode");
   (void)Dst;
   (void)Dst2;
   if (threadIdx.x % warpSize == 0) {
@@ -247,15 +311,40 @@ __global__ void issueKernel(unsigned long long *Cycles, unsigned long long *Real
   T.start();
   for (int It = 0; It < Iters; ++It) {
     unsigned long long Save;
-#define ISSUE(BEGIN, OP)                                                       \
-  asm volatile(BEGIN ".rept 16\n\t" OP "\n\t.endr" EXEC_END                    \
-               : [save] "=&s"(Save)::"memory")
-#define ISSUE_ALL(OP) ISSUE(EXEC_BEGIN_ALL, OP)
-#define ISSUE_ZERO(OP) ISSUE(EXEC_BEGIN_ZERO, OP)
-    if constexpr (E == EXEC_ZERO)
-      FOR_INST(I, ISSUE_ZERO);
+    if constexpr (I == NOP && E == EXEC_ALL)
+      asm volatile("s_mov_b64 %[save], exec\n\t"
+                   "s_mov_b64 exec, %[save]\n\t"
+                   ".rept 16\n\t"
+                   "s_nop 0\n\t"
+                   ".endr\n\t"
+                   "s_mov_b64 exec, %[save]"
+                   : [save] "=&s"(Save)::"memory");
+    else if constexpr (I == INV && E == EXEC_ALL)
+      asm volatile("s_mov_b64 %[save], exec\n\t"
+                   "s_mov_b64 exec, %[save]\n\t"
+                   ".rept 16\n\t"
+                   "buffer_inv\n\t"
+                   ".endr\n\t"
+                   "s_mov_b64 exec, %[save]"
+                   : [save] "=&s"(Save)::"memory");
+    else if constexpr (I == INV && E == EXEC_ZERO)
+      asm volatile("s_mov_b64 %[save], exec\n\t"
+                   "s_mov_b64 exec, 0\n\t"
+                   ".rept 16\n\t"
+                   "buffer_inv\n\t"
+                   ".endr\n\t"
+                   "s_mov_b64 exec, %[save]"
+                   : [save] "=&s"(Save)::"memory");
+    else if constexpr (I == INV_SC0 && E == EXEC_ALL)
+      asm volatile("s_mov_b64 %[save], exec\n\t"
+                   "s_mov_b64 exec, %[save]\n\t"
+                   ".rept 16\n\t"
+                   "buffer_inv sc0\n\t"
+                   ".endr\n\t"
+                   "s_mov_b64 exec, %[save]"
+                   : [save] "=&s"(Save)::"memory");
     else
-      FOR_INST(I, ISSUE_ALL);
+      static_assert(Unsupported<I>, "unsupported instruction or EXEC mode");
   }
   waitVmcnt0();
   T.stop(Cycles, Real, blockIdx.x);
@@ -268,16 +357,52 @@ __global__ void latencyKernel(unsigned long long *Cycles,
   T.start();
   for (int It = 0; It < Iters; ++It) {
     unsigned long long Save;
-#define LATENCY(BEGIN, OP)                                                     \
-  asm volatile(BEGIN ".rept 16\n\t" OP "\n\ts_waitcnt vmcnt(0)\n\t.endr"       \
-                   EXEC_END                                                    \
-               : [save] "=&s"(Save)::"memory")
-#define LATENCY_ALL(OP) LATENCY(EXEC_BEGIN_ALL, OP)
-#define LATENCY_ZERO(OP) LATENCY(EXEC_BEGIN_ZERO, OP)
-    if constexpr (E == EXEC_ZERO)
-      FOR_INST(I, LATENCY_ZERO);
+    if constexpr (I == NONE && E == EXEC_ALL)
+      asm volatile("s_mov_b64 %[save], exec\n\t"
+                   "s_mov_b64 exec, %[save]\n\t"
+                   ".rept 16\n\t"
+                   "s_waitcnt vmcnt(0)\n\t"
+                   ".endr\n\t"
+                   "s_mov_b64 exec, %[save]"
+                   : [save] "=&s"(Save)::"memory");
+    else if constexpr (I == NOP && E == EXEC_ALL)
+      asm volatile("s_mov_b64 %[save], exec\n\t"
+                   "s_mov_b64 exec, %[save]\n\t"
+                   ".rept 16\n\t"
+                   "s_nop 0\n\t"
+                   "s_waitcnt vmcnt(0)\n\t"
+                   ".endr\n\t"
+                   "s_mov_b64 exec, %[save]"
+                   : [save] "=&s"(Save)::"memory");
+    else if constexpr (I == INV && E == EXEC_ALL)
+      asm volatile("s_mov_b64 %[save], exec\n\t"
+                   "s_mov_b64 exec, %[save]\n\t"
+                   ".rept 16\n\t"
+                   "buffer_inv\n\t"
+                   "s_waitcnt vmcnt(0)\n\t"
+                   ".endr\n\t"
+                   "s_mov_b64 exec, %[save]"
+                   : [save] "=&s"(Save)::"memory");
+    else if constexpr (I == INV && E == EXEC_ZERO)
+      asm volatile("s_mov_b64 %[save], exec\n\t"
+                   "s_mov_b64 exec, 0\n\t"
+                   ".rept 16\n\t"
+                   "buffer_inv\n\t"
+                   "s_waitcnt vmcnt(0)\n\t"
+                   ".endr\n\t"
+                   "s_mov_b64 exec, %[save]"
+                   : [save] "=&s"(Save)::"memory");
+    else if constexpr (I == INV_SC0 && E == EXEC_ALL)
+      asm volatile("s_mov_b64 %[save], exec\n\t"
+                   "s_mov_b64 exec, %[save]\n\t"
+                   ".rept 16\n\t"
+                   "buffer_inv sc0\n\t"
+                   "s_waitcnt vmcnt(0)\n\t"
+                   ".endr\n\t"
+                   "s_mov_b64 exec, %[save]"
+                   : [save] "=&s"(Save)::"memory");
     else
-      FOR_INST(I, LATENCY_ALL);
+      static_assert(Unsupported<I>, "unsupported instruction or EXEC mode");
   }
   T.stop(Cycles, Real, blockIdx.x);
 }
