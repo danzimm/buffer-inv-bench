@@ -19,7 +19,9 @@ cat > "$dir/bench.hip" <<'BUFFER_INV_BENCH_EOF_BENCH_HIP'
 //   cache       Does it invalidate the vector L1 or L2? Untimed: run.py reads
 //               L1 (TCP) and L2 (TCC) hardware counters for these launches
 //               with rocprofv3.
-//   contention  Does it slow the loads of other waves on the same CU?
+//   contention  Does it slow other waves on the same CU? Loader waves doing
+//               vector memory loads, LDS reads, or MFMAs are timed while
+//               other waves issue the instruction.
 //
 // All measured sequences are inline asm, so the instruction stream is exact.
 // The compiler's waitcnt insertion does not look inside inline asm, so every
@@ -364,19 +366,46 @@ __global__ void cacheKernel(const unsigned *Buf, int Iters) {
   }
 }
 
-// contention: the first LoaderWavesPerBlock waves of each block reload their
-// L1-resident footprint each iteration and are timed. The other waves of the
-// same block (and therefore the same CU) issue Aggressor in a loop. Paced
-// aggressors follow each instruction with `s_sleep 1` (about 64 cycles).
-// Pacing is a template parameter so the unpaced loop is truly back-to-back.
-template <int Aggressor, bool Paced>
+// What the timed loader waves of the contention test do each iteration.
+enum Work { WORK_VMEM, WORK_LDS, WORK_MFMA };
+
+static const char *workName(int W) {
+  switch (W) {
+  case WORK_VMEM: return "vmem";
+  case WORK_LDS: return "lds";
+  case WORK_MFMA: return "mfma";
+  }
+  return "?";
+}
+
+constexpr int MaxLoaderWaves = 4;
+
+typedef _Float16 half4 __attribute__((ext_vector_type(4)));
+typedef float float16 __attribute__((ext_vector_type(16)));
+typedef __attribute__((address_space(3))) const unsigned LdsUint;
+
+// contention: the first LoaderWavesPerBlock waves of each block are timed
+// doing Work each iteration:
+//   WORK_VMEM: 8 global loads of an L1-resident footprint, s_waitcnt vmcnt(0).
+//   WORK_LDS:  8 ds_read_b32 from the wave's own LDS region,
+//              s_waitcnt lgkmcnt(0).
+//   WORK_MFMA: 8 dependent v_mfma_f32_32x32x8_f16. These use the builtin, not
+//              inline asm, so the compiler inserts the wait states that
+//              dependent MFMAs need.
+// The other waves of the same block (and therefore the same CU) issue
+// Aggressor in a loop. Paced aggressors follow each instruction with
+// `s_sleep 1` (about 64 cycles). Pacing is a template parameter so the unpaced
+// loop is truly back-to-back.
+template <int Work, int Aggressor, bool Paced>
 __global__ void contentionKernel(unsigned long long *Cycles,
                                  unsigned long long *Real, const unsigned *Buf,
                                  int Iters, int LoaderWavesPerBlock) {
   int Wave = threadIdx.x / warpSize;
+  int Lane = threadIdx.x % warpSize;
   if (Wave >= LoaderWavesPerBlock) {
-    // Aggressor wave: keep issuing for longer than the loaders run.
-    for (int It = 0; It < Iters * 4; ++It) {
+    // Aggressor wave: keep issuing for well over the time any loader workload
+    // takes, so the loaders are measured under contention throughout.
+    for (int It = 0; It < Iters * 16; ++It) {
 #pragma unroll
       for (int J = 0; J < OpsPerIter; ++J) {
         op<Aggressor>();
@@ -389,13 +418,49 @@ __global__ void contentionKernel(unsigned long long *Cycles,
   }
 
   int GlobalWave = blockIdx.x * LoaderWavesPerBlock + Wave;
-  const unsigned *Base = Buf + (size_t)GlobalWave * DwordsPerWave;
-  loadFootprint(Base); // Warm L1.
-
   Timer T;
-  T.start();
-  for (int It = 0; It < Iters; ++It)
-    loadFootprint(Base);
+  if constexpr (Work == WORK_VMEM) {
+    const unsigned *Base = Buf + (size_t)GlobalWave * DwordsPerWave;
+    loadFootprint(Base); // Warm L1.
+    T.start();
+    for (int It = 0; It < Iters; ++It)
+      loadFootprint(Base);
+  } else if constexpr (Work == WORK_LDS) {
+    // The values don't matter, so the LDS is left uninitialized.
+    __shared__ unsigned Lds[MaxLoaderWaves * DwordsPerWave];
+    LdsUint *P = (LdsUint *)&Lds[Wave * DwordsPerWave] + Lane;
+    T.start();
+    for (int It = 0; It < Iters; ++It) {
+      unsigned V[LoadsPerIter];
+#pragma unroll
+      for (int K = 0; K < LoadsPerIter; ++K)
+        asm volatile("ds_read_b32 %0, %1"
+                     : "=v"(V[K])
+                     : "v"(P + K * 64)
+                     : "memory");
+      asm volatile("s_waitcnt lgkmcnt(0)" ::: "memory");
+#pragma unroll
+      for (int K = 0; K < LoadsPerIter; ++K)
+        asm volatile("" ::"v"(V[K]));
+    }
+  } else if constexpr (Work == WORK_MFMA) {
+    half4 A = {(_Float16)Lane, 1, 2, 3};
+    float16 Acc = {};
+    T.start();
+    // Make A depend on an asm statement after the start timer, so the
+    // compiler cannot move the MFMAs before it.
+    asm volatile("" : "+v"(A));
+    for (int It = 0; It < Iters; ++It) {
+#pragma unroll
+      for (int K = 0; K < LoadsPerIter; ++K)
+        Acc = __builtin_amdgcn_mfma_f32_32x32x8f16(A, A, Acc, 0, 0, 0);
+    }
+    // Consume the result before the stop timer, so the MFMAs cannot move
+    // after it.
+    asm volatile("" ::"v"(Acc[0]));
+  } else {
+    static_assert(Unsupported<Work>, "unsupported loader work");
+  }
   T.stop(Cycles, Real, GlobalWave);
 }
 
@@ -507,16 +572,30 @@ static void runCache(const char *Test, const Options &O, const unsigned *Buf) {
   }
 }
 
-template <int Aggressor, bool Paced = false>
-static void runContention(const char *Test, const Options &O,
-                          const unsigned *Buf, int LoaderWaves,
-                          int TotalWaves) {
+template <int Work, int Aggressor, bool Paced>
+static void runContention(const Options &O, const unsigned *Buf,
+                          int LoaderWaves, int TotalWaves) {
+  // The test name carries the loader work and pacing, e.g. contention[lds].
+  static std::string Name;
+  Name = std::string(Paced ? "contention-paced[" : "contention[") +
+         workName(Work) + "]";
   int B = O.Blocks;
-  runTimed({"contentionKernel", Test, NONE, EXEC_ALL, Aggressor},
+  runTimed({"contentionKernel", Name.c_str(), NONE, EXEC_ALL, Aggressor},
            B * LoaderWaves, O.Iters, O, [&](auto *C, auto *R) {
-             contentionKernel<Aggressor, Paced>
+             contentionKernel<Work, Aggressor, Paced>
                  <<<B, 64 * TotalWaves>>>(C, R, Buf, O.Iters, LoaderWaves);
            });
+}
+
+// All contention cases for one loader workload: s_nop and buffer_inv
+// aggressors, back-to-back and paced.
+template <int Work>
+static void runContentionWork(const Options &O, const unsigned *Buf,
+                              int LoaderWaves, int TotalWaves) {
+  runContention<Work, NOP, false>(O, Buf, LoaderWaves, TotalWaves);
+  runContention<Work, INV, false>(O, Buf, LoaderWaves, TotalWaves);
+  runContention<Work, NOP, true>(O, Buf, LoaderWaves, TotalWaves);
+  runContention<Work, INV, true>(O, Buf, LoaderWaves, TotalWaves);
 }
 
 int main(int Argc, char **Argv) {
@@ -617,16 +696,13 @@ int main(int Argc, char **Argv) {
   }
 
   if (runs(O, "contention")) {
-    runContention<NOP>("contention", O, Coarse, ContentionLoaders,
-                       ContentionWaves);
-    runContention<INV>("contention", O, Coarse, ContentionLoaders,
-                       ContentionWaves);
-    runContention<INV_SC0>("contention", O, Coarse, ContentionLoaders,
-                           ContentionWaves);
-    runContention<NOP, true>("contention-paced", O, Coarse, ContentionLoaders,
-                             ContentionWaves);
-    runContention<INV, true>("contention-paced", O, Coarse, ContentionLoaders,
-                             ContentionWaves);
+    static_assert(ContentionLoaders <= MaxLoaderWaves, "LDS sized for 4");
+    runContentionWork<WORK_VMEM>(O, Coarse, ContentionLoaders,
+                                 ContentionWaves);
+    runContentionWork<WORK_LDS>(O, Coarse, ContentionLoaders,
+                                ContentionWaves);
+    runContentionWork<WORK_MFMA>(O, Coarse, ContentionLoaders,
+                                 ContentionWaves);
   }
 
   HIP_CHECK(hipFree(Fine));
@@ -910,26 +986,33 @@ def report(res, arch, device, rocm):
                  "L1 invalidated?", "L2 invalidated?"], lines))
 
     # contention
-    for test, title, note, aggressors in [
-        ("contention", "Effect on other waves, back-to-back",
-         "4 waves per CU reload their L1-resident footprint while 4 other "
-         "waves of the same block issue the aggressor instruction in a loop.",
-         ["s_nop 0", "buffer_inv", "buffer_inv sc0"]),
-        ("contention-paced", "Effect on other waves, paced",
-         "Same, but each aggressor instruction is followed by `s_sleep 1` "
-         "(about 64 cycles).",
-         ["s_nop 0", "buffer_inv"]),
-    ]:
-        base = res.get(test, "none", "cycles", aggressor="s_nop 0")
-        lines = []
-        for agg in aggressors:
-            val = res.get(test, "none", "cycles", aggressor=agg)
-            if val is not None and base:
-                lines.append(["`{}`".format(agg), "{:.1f}".format(val),
-                              pct(val, base)])
-        out.append(table(title, note, ["aggressor instruction",
-                                       "loader cycles/iter", "vs s_nop 0"],
-                         lines))
+    works = [("vmem", "vector memory loads (8 L1-hit loads, `vmcnt(0)`)"),
+             ("lds", "LDS reads (8 `ds_read_b32`, `lgkmcnt(0)`)"),
+             ("mfma", "MFMAs (8 dependent `v_mfma_f32_32x32x8_f16`)")]
+    lines = []
+    for work, label in works:
+        cells = [label]
+        for test in ["contention[{}]".format(work),
+                     "contention-paced[{}]".format(work)]:
+            base = res.get(test, "none", "cycles", aggressor="s_nop 0")
+            inv = res.get(test, "none", "cycles", aggressor="buffer_inv")
+            if base is None or inv is None:
+                cells += ["", "", ""]
+                continue
+            cells += ["{:.1f}".format(base), "{:.1f}".format(inv),
+                      pct(inv, base)]
+        if any(cells[1:]):
+            lines.append(cells)
+    out.append(table(
+        "Effect on other waves on the same CU",
+        "4 loader waves per CU are timed doing the listed work each "
+        "iteration, while 4 other waves of the same block issue `s_nop 0` "
+        "(baseline) or `buffer_inv` in a loop, back-to-back or paced with "
+        "`s_sleep 1` (about 64 cycles) after each. Loader cycles per "
+        "iteration.",
+        ["loader work", "`s_nop` back-to-back", "`buffer_inv` back-to-back",
+         "slowdown", "`s_nop` paced", "`buffer_inv` paced", "slowdown"],
+        lines))
     return "\n".join(out)
 
 
@@ -1028,8 +1111,9 @@ Tests (all instruction sequences are inline asm, so they are exact):
   footprint, and `run.py` runs it under `rocprofv3` to count L1→L2 reads and
   L2 hits and misses. `buffer_inv sc1` is the positive control (it invalidates
   L1). Coarse- and fine-grained memory.
-- **contention**: loader waves on the same CU while other waves issue the
-  instruction back-to-back, or paced with `s_sleep 1`.
+- **contention**: loader waves on the same CU are timed doing vector memory
+  loads, LDS reads, or MFMAs, while other waves issue the instruction
+  back-to-back, or paced with `s_sleep 1`.
 
 `bench.hip --tests LIST` runs a subset of the tests, and `--manifest FILE`
 writes one line per kernel launch so profiler records can be matched to tests.

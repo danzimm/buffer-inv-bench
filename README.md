@@ -31,8 +31,9 @@ Tests (all instruction sequences are inline asm, so they are exact):
   footprint, and `run.py` runs it under `rocprofv3` to count L1→L2 reads and
   L2 hits and misses. `buffer_inv sc1` is the positive control (it invalidates
   L1). Coarse- and fine-grained memory.
-- **contention**: loader waves on the same CU while other waves issue the
-  instruction back-to-back, or paced with `s_sleep 1`.
+- **contention**: loader waves on the same CU are timed doing vector memory
+  loads, LDS reads, or MFMAs, while other waves issue the instruction
+  back-to-back, or paced with `s_sleep 1`.
 
 `bench.hip --tests LIST` runs a subset of the tests, and `--manifest FILE`
 writes one line per kernel launch so profiler records can be matched to tests.

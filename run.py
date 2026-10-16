@@ -271,26 +271,33 @@ def report(res, arch, device, rocm):
                  "L1 invalidated?", "L2 invalidated?"], lines))
 
     # contention
-    for test, title, note, aggressors in [
-        ("contention", "Effect on other waves, back-to-back",
-         "4 waves per CU reload their L1-resident footprint while 4 other "
-         "waves of the same block issue the aggressor instruction in a loop.",
-         ["s_nop 0", "buffer_inv", "buffer_inv sc0"]),
-        ("contention-paced", "Effect on other waves, paced",
-         "Same, but each aggressor instruction is followed by `s_sleep 1` "
-         "(about 64 cycles).",
-         ["s_nop 0", "buffer_inv"]),
-    ]:
-        base = res.get(test, "none", "cycles", aggressor="s_nop 0")
-        lines = []
-        for agg in aggressors:
-            val = res.get(test, "none", "cycles", aggressor=agg)
-            if val is not None and base:
-                lines.append(["`{}`".format(agg), "{:.1f}".format(val),
-                              pct(val, base)])
-        out.append(table(title, note, ["aggressor instruction",
-                                       "loader cycles/iter", "vs s_nop 0"],
-                         lines))
+    works = [("vmem", "vector memory loads (8 L1-hit loads, `vmcnt(0)`)"),
+             ("lds", "LDS reads (8 `ds_read_b32`, `lgkmcnt(0)`)"),
+             ("mfma", "MFMAs (8 dependent `v_mfma_f32_32x32x8_f16`)")]
+    lines = []
+    for work, label in works:
+        cells = [label]
+        for test in ["contention[{}]".format(work),
+                     "contention-paced[{}]".format(work)]:
+            base = res.get(test, "none", "cycles", aggressor="s_nop 0")
+            inv = res.get(test, "none", "cycles", aggressor="buffer_inv")
+            if base is None or inv is None:
+                cells += ["", "", ""]
+                continue
+            cells += ["{:.1f}".format(base), "{:.1f}".format(inv),
+                      pct(inv, base)]
+        if any(cells[1:]):
+            lines.append(cells)
+    out.append(table(
+        "Effect on other waves on the same CU",
+        "4 loader waves per CU are timed doing the listed work each "
+        "iteration, while 4 other waves of the same block issue `s_nop 0` "
+        "(baseline) or `buffer_inv` in a loop, back-to-back or paced with "
+        "`s_sleep 1` (about 64 cycles) after each. Loader cycles per "
+        "iteration.",
+        ["loader work", "`s_nop` back-to-back", "`buffer_inv` back-to-back",
+         "slowdown", "`s_nop` paced", "`buffer_inv` paced", "slowdown"],
+        lines))
     return "\n".join(out)
 
 

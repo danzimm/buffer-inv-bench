@@ -1,146 +1,451 @@
-test,variant,aggressor,rep,cycles_per_iter,ns_per_iter
-vmcnt-exec0,s_nop 0 (EXEC=0),none,0,0.0000,1024
-vmcnt-exec0,s_nop 0 (EXEC=0),none,1,0.0000,1024
-vmcnt-exec0,s_nop 0 (EXEC=0),none,2,0.0000,1024
-vmcnt-exec0,s_nop 0 (EXEC=0),none,3,0.0000,1024
-vmcnt-exec0,s_nop 0 (EXEC=0),none,4,0.0000,1024
-vmcnt-exec0,buffer_inv (EXEC=0),none,0,1.0000,1024
-vmcnt-exec0,buffer_inv (EXEC=0),none,1,1.0000,1024
-vmcnt-exec0,buffer_inv (EXEC=0),none,2,1.0000,1024
-vmcnt-exec0,buffer_inv (EXEC=0),none,3,1.0000,1024
-vmcnt-exec0,buffer_inv (EXEC=0),none,4,1.0000,1024
-vmcnt-exec0,buffer_inv (EXEC unchanged),none,0,1.0000,1024
-vmcnt-exec0,buffer_inv (EXEC unchanged),none,1,1.0000,1024
-vmcnt-exec0,buffer_inv (EXEC unchanged),none,2,1.0000,1024
-vmcnt-exec0,buffer_inv (EXEC unchanged),none,3,1.0000,1024
-vmcnt-exec0,buffer_inv (EXEC unchanged),none,4,1.0000,1024
-vmcnt-exec0,global_load_dword (EXEC=0),none,0,1.0000,1024
-vmcnt-exec0,global_load_dword (EXEC=0),none,1,1.0000,1024
-vmcnt-exec0,global_load_dword (EXEC=0),none,2,1.0000,1024
-vmcnt-exec0,global_load_dword (EXEC=0),none,3,1.0000,1024
-vmcnt-exec0,global_load_dword (EXEC=0),none,4,1.0000,1024
-issue,none,none,0,0.001,0.000
-issue,none,none,1,0.001,0.000
-issue,none,none,2,0.001,0.000
-issue,none,none,3,0.001,0.000
-issue,none,none,4,0.001,0.000
-latency,none,none,0,6.021,2.751
-latency,none,none,1,6.022,2.751
-latency,none,none,2,6.022,2.751
-latency,none,none,3,6.022,2.751
-latency,none,none,4,6.022,2.751
-issue,s_nop 0,none,0,6.022,2.751
-issue,s_nop 0,none,1,6.022,2.751
-issue,s_nop 0,none,2,6.022,2.751
-issue,s_nop 0,none,3,6.022,2.751
-issue,s_nop 0,none,4,6.022,2.751
-latency,s_nop 0,none,0,10.021,4.578
-latency,s_nop 0,none,1,10.022,4.578
-latency,s_nop 0,none,2,10.022,4.578
-latency,s_nop 0,none,3,10.022,4.573
-latency,s_nop 0,none,4,10.022,4.573
-issue,buffer_inv,none,0,7.026,3.218
-issue,buffer_inv,none,1,7.027,3.220
-issue,buffer_inv,none,2,7.027,3.220
-issue,buffer_inv,none,3,7.027,3.220
-issue,buffer_inv,none,4,7.027,3.220
-latency,buffer_inv,none,0,90.533,41.458
-latency,buffer_inv,none,1,90.534,41.428
-latency,buffer_inv,none,2,94.513,42.783
-latency,buffer_inv,none,3,90.532,41.494
-latency,buffer_inv,none,4,94.513,42.698
-issue,buffer_inv sc0,none,0,7.026,3.206
-issue,buffer_inv sc0,none,1,7.027,3.206
-issue,buffer_inv sc0,none,2,7.027,3.206
-issue,buffer_inv sc0,none,3,7.027,3.206
-issue,buffer_inv sc0,none,4,7.026,3.223
-latency,buffer_inv sc0,none,0,94.511,42.947
-latency,buffer_inv sc0,none,1,90.532,41.431
-latency,buffer_inv sc0,none,2,94.513,42.700
-latency,buffer_inv sc0,none,3,90.534,41.509
-latency,buffer_inv sc0,none,4,94.511,42.778
-cache[coarse],none,none,0,172.000,78.125
-cache[coarse],none,none,1,168.004,77.500
-cache[coarse],none,none,2,172.000,78.086
-cache[coarse],none,none,3,172.000,78.086
-cache[coarse],none,none,4,172.000,78.086
-cache[coarse+bypass-l1],none,none,0,265.387,121.172
-cache[coarse+bypass-l1],none,none,1,264.418,121.406
-cache[coarse+bypass-l1],none,none,2,265.547,121.250
-cache[coarse+bypass-l1],none,none,3,264.316,121.406
-cache[coarse+bypass-l1],none,none,4,265.523,121.250
-cache[coarse],buffer_inv,none,0,176.000,80.156
-cache[coarse],buffer_inv,none,1,176.000,79.727
-cache[coarse],buffer_inv,none,2,172.004,79.180
-cache[coarse],buffer_inv,none,3,176.000,79.766
-cache[coarse],buffer_inv,none,4,176.000,79.727
-cache[coarse+bypass-l1],buffer_inv,none,0,270.531,122.695
-cache[coarse+bypass-l1],buffer_inv,none,1,268.492,122.266
-cache[coarse+bypass-l1],buffer_inv,none,2,269.156,122.227
-cache[coarse+bypass-l1],buffer_inv,none,3,268.551,122.852
-cache[coarse+bypass-l1],buffer_inv,none,4,270.547,122.344
-cache[coarse],buffer_inv sc0,none,0,172.004,79.180
-cache[coarse],buffer_inv sc0,none,1,176.000,79.492
-cache[coarse],buffer_inv sc0,none,2,176.004,79.648
-cache[coarse],buffer_inv sc0,none,3,176.000,79.492
-cache[coarse],buffer_inv sc0,none,4,176.000,79.492
-cache[coarse],buffer_inv sc1,none,0,4350.363,1978.086
-cache[coarse],buffer_inv sc1,none,1,4350.355,1984.727
-cache[coarse],buffer_inv sc1,none,2,4350.352,1975.195
-cache[coarse],buffer_inv sc1,none,3,4350.379,1986.758
-cache[coarse],buffer_inv sc1,none,4,4350.387,1982.148
-cache[fine],none,none,0,172.000,77.695
-cache[fine],none,none,1,172.000,77.617
-cache[fine],none,none,2,172.004,77.656
-cache[fine],none,none,3,168.004,76.758
-cache[fine],none,none,4,172.000,77.617
-cache[fine+bypass-l1],none,none,0,264.395,119.727
-cache[fine+bypass-l1],none,none,1,264.180,120.000
-cache[fine+bypass-l1],none,none,2,264.453,120.781
-cache[fine+bypass-l1],none,none,3,264.242,120.742
-cache[fine+bypass-l1],none,none,4,264.336,120.781
-cache[fine],buffer_inv,none,0,172.004,79.375
-cache[fine],buffer_inv,none,1,176.000,80.078
-cache[fine],buffer_inv,none,2,176.000,80.078
-cache[fine],buffer_inv,none,3,176.000,80.430
-cache[fine],buffer_inv,none,4,172.004,79.375
-cache[fine+bypass-l1],buffer_inv,none,0,268.773,122.930
-cache[fine+bypass-l1],buffer_inv,none,1,268.801,123.281
-cache[fine+bypass-l1],buffer_inv,none,2,268.941,122.852
-cache[fine+bypass-l1],buffer_inv,none,3,269.039,122.891
-cache[fine+bypass-l1],buffer_inv,none,4,268.906,122.500
-cache[fine],buffer_inv sc0,none,0,176.004,79.727
-cache[fine],buffer_inv sc0,none,1,176.000,79.766
-cache[fine],buffer_inv sc0,none,2,172.004,79.297
-cache[fine],buffer_inv sc0,none,3,176.004,79.727
-cache[fine],buffer_inv sc0,none,4,176.000,79.727
-cache[fine],buffer_inv sc1,none,0,4350.352,1984.883
-cache[fine],buffer_inv sc1,none,1,4350.355,1976.523
-cache[fine],buffer_inv sc1,none,2,4350.352,1984.883
-cache[fine],buffer_inv sc1,none,3,4350.367,1977.305
-cache[fine],buffer_inv sc1,none,4,4350.363,1988.008
-cache+aggressor,none,s_nop 0,0,191.930,89.297
-cache+aggressor,none,s_nop 0,1,191.930,88.984
-cache+aggressor,none,s_nop 0,2,191.941,88.750
-cache+aggressor,none,s_nop 0,3,191.930,88.828
-cache+aggressor,none,s_nop 0,4,191.922,88.789
-cache+aggressor,none,buffer_inv,0,384.016,175.352
-cache+aggressor,none,buffer_inv,1,384.020,176.250
-cache+aggressor,none,buffer_inv,2,384.016,176.172
-cache+aggressor,none,buffer_inv,3,384.016,176.367
-cache+aggressor,none,buffer_inv,4,384.016,176.406
-cache+aggressor,none,buffer_inv sc0,0,384.016,175.312
-cache+aggressor,none,buffer_inv sc0,1,384.020,175.312
-cache+aggressor,none,buffer_inv sc0,2,384.020,176.211
-cache+aggressor,none,buffer_inv sc0,3,384.016,176.133
-cache+aggressor,none,buffer_inv sc0,4,384.016,176.797
-cache+paced-aggressor,none,s_nop 0,0,188.121,86.953
-cache+paced-aggressor,none,s_nop 0,1,188.117,87.773
-cache+paced-aggressor,none,s_nop 0,2,188.121,87.227
-cache+paced-aggressor,none,s_nop 0,3,188.125,87.617
-cache+paced-aggressor,none,s_nop 0,4,188.121,87.656
-cache+paced-aggressor,none,buffer_inv,0,192.047,89.336
-cache+paced-aggressor,none,buffer_inv,1,192.059,88.750
-cache+paced-aggressor,none,buffer_inv,2,192.055,88.828
-cache+paced-aggressor,none,buffer_inv,3,192.055,88.711
-cache+paced-aggressor,none,buffer_inv,4,192.055,89.531
+test,instruction,exec,aggressor,rep,metric,value
+vmcnt,s_nop 0,all,none,0,vmcnt_before,1
+vmcnt,s_nop 0,all,none,0,vmcnt_after,1
+vmcnt,s_nop 0,all,none,0,waves_incremented,0
+vmcnt,s_nop 0,all,none,0,waves,1024
+vmcnt,s_nop 0,all,none,1,vmcnt_before,1
+vmcnt,s_nop 0,all,none,1,vmcnt_after,1
+vmcnt,s_nop 0,all,none,1,waves_incremented,0
+vmcnt,s_nop 0,all,none,1,waves,1024
+vmcnt,s_nop 0,all,none,2,vmcnt_before,1
+vmcnt,s_nop 0,all,none,2,vmcnt_after,1
+vmcnt,s_nop 0,all,none,2,waves_incremented,0
+vmcnt,s_nop 0,all,none,2,waves,1024
+vmcnt,s_nop 0,all,none,3,vmcnt_before,1
+vmcnt,s_nop 0,all,none,3,vmcnt_after,1
+vmcnt,s_nop 0,all,none,3,waves_incremented,0
+vmcnt,s_nop 0,all,none,3,waves,1024
+vmcnt,s_nop 0,all,none,4,vmcnt_before,1
+vmcnt,s_nop 0,all,none,4,vmcnt_after,1
+vmcnt,s_nop 0,all,none,4,waves_incremented,0
+vmcnt,s_nop 0,all,none,4,waves,1024
+vmcnt,s_nop 0,0,none,0,vmcnt_before,1
+vmcnt,s_nop 0,0,none,0,vmcnt_after,1
+vmcnt,s_nop 0,0,none,0,waves_incremented,0
+vmcnt,s_nop 0,0,none,0,waves,1024
+vmcnt,s_nop 0,0,none,1,vmcnt_before,1
+vmcnt,s_nop 0,0,none,1,vmcnt_after,1
+vmcnt,s_nop 0,0,none,1,waves_incremented,0
+vmcnt,s_nop 0,0,none,1,waves,1024
+vmcnt,s_nop 0,0,none,2,vmcnt_before,1
+vmcnt,s_nop 0,0,none,2,vmcnt_after,1
+vmcnt,s_nop 0,0,none,2,waves_incremented,0
+vmcnt,s_nop 0,0,none,2,waves,1024
+vmcnt,s_nop 0,0,none,3,vmcnt_before,1
+vmcnt,s_nop 0,0,none,3,vmcnt_after,1
+vmcnt,s_nop 0,0,none,3,waves_incremented,0
+vmcnt,s_nop 0,0,none,3,waves,1024
+vmcnt,s_nop 0,0,none,4,vmcnt_before,1
+vmcnt,s_nop 0,0,none,4,vmcnt_after,1
+vmcnt,s_nop 0,0,none,4,waves_incremented,0
+vmcnt,s_nop 0,0,none,4,waves,1024
+vmcnt,buffer_inv,all,none,0,vmcnt_before,1
+vmcnt,buffer_inv,all,none,0,vmcnt_after,2
+vmcnt,buffer_inv,all,none,0,waves_incremented,1024
+vmcnt,buffer_inv,all,none,0,waves,1024
+vmcnt,buffer_inv,all,none,1,vmcnt_before,1
+vmcnt,buffer_inv,all,none,1,vmcnt_after,2
+vmcnt,buffer_inv,all,none,1,waves_incremented,1024
+vmcnt,buffer_inv,all,none,1,waves,1024
+vmcnt,buffer_inv,all,none,2,vmcnt_before,1
+vmcnt,buffer_inv,all,none,2,vmcnt_after,2
+vmcnt,buffer_inv,all,none,2,waves_incremented,1024
+vmcnt,buffer_inv,all,none,2,waves,1024
+vmcnt,buffer_inv,all,none,3,vmcnt_before,1
+vmcnt,buffer_inv,all,none,3,vmcnt_after,2
+vmcnt,buffer_inv,all,none,3,waves_incremented,1024
+vmcnt,buffer_inv,all,none,3,waves,1024
+vmcnt,buffer_inv,all,none,4,vmcnt_before,1
+vmcnt,buffer_inv,all,none,4,vmcnt_after,2
+vmcnt,buffer_inv,all,none,4,waves_incremented,1024
+vmcnt,buffer_inv,all,none,4,waves,1024
+vmcnt,buffer_inv,0,none,0,vmcnt_before,1
+vmcnt,buffer_inv,0,none,0,vmcnt_after,2
+vmcnt,buffer_inv,0,none,0,waves_incremented,1024
+vmcnt,buffer_inv,0,none,0,waves,1024
+vmcnt,buffer_inv,0,none,1,vmcnt_before,1
+vmcnt,buffer_inv,0,none,1,vmcnt_after,2
+vmcnt,buffer_inv,0,none,1,waves_incremented,1024
+vmcnt,buffer_inv,0,none,1,waves,1024
+vmcnt,buffer_inv,0,none,2,vmcnt_before,1
+vmcnt,buffer_inv,0,none,2,vmcnt_after,2
+vmcnt,buffer_inv,0,none,2,waves_incremented,1024
+vmcnt,buffer_inv,0,none,2,waves,1024
+vmcnt,buffer_inv,0,none,3,vmcnt_before,1
+vmcnt,buffer_inv,0,none,3,vmcnt_after,2
+vmcnt,buffer_inv,0,none,3,waves_incremented,1024
+vmcnt,buffer_inv,0,none,3,waves,1024
+vmcnt,buffer_inv,0,none,4,vmcnt_before,1
+vmcnt,buffer_inv,0,none,4,vmcnt_after,2
+vmcnt,buffer_inv,0,none,4,waves_incremented,1024
+vmcnt,buffer_inv,0,none,4,waves,1024
+vmcnt,global_load_dword,all,none,0,vmcnt_before,1
+vmcnt,global_load_dword,all,none,0,vmcnt_after,2
+vmcnt,global_load_dword,all,none,0,waves_incremented,1024
+vmcnt,global_load_dword,all,none,0,waves,1024
+vmcnt,global_load_dword,all,none,1,vmcnt_before,1
+vmcnt,global_load_dword,all,none,1,vmcnt_after,2
+vmcnt,global_load_dword,all,none,1,waves_incremented,1024
+vmcnt,global_load_dword,all,none,1,waves,1024
+vmcnt,global_load_dword,all,none,2,vmcnt_before,1
+vmcnt,global_load_dword,all,none,2,vmcnt_after,2
+vmcnt,global_load_dword,all,none,2,waves_incremented,1024
+vmcnt,global_load_dword,all,none,2,waves,1024
+vmcnt,global_load_dword,all,none,3,vmcnt_before,1
+vmcnt,global_load_dword,all,none,3,vmcnt_after,2
+vmcnt,global_load_dword,all,none,3,waves_incremented,1024
+vmcnt,global_load_dword,all,none,3,waves,1024
+vmcnt,global_load_dword,all,none,4,vmcnt_before,1
+vmcnt,global_load_dword,all,none,4,vmcnt_after,2
+vmcnt,global_load_dword,all,none,4,waves_incremented,1024
+vmcnt,global_load_dword,all,none,4,waves,1024
+vmcnt,global_load_dword,0,none,0,vmcnt_before,1
+vmcnt,global_load_dword,0,none,0,vmcnt_after,2
+vmcnt,global_load_dword,0,none,0,waves_incremented,1024
+vmcnt,global_load_dword,0,none,0,waves,1024
+vmcnt,global_load_dword,0,none,1,vmcnt_before,1
+vmcnt,global_load_dword,0,none,1,vmcnt_after,2
+vmcnt,global_load_dword,0,none,1,waves_incremented,1024
+vmcnt,global_load_dword,0,none,1,waves,1024
+vmcnt,global_load_dword,0,none,2,vmcnt_before,1
+vmcnt,global_load_dword,0,none,2,vmcnt_after,2
+vmcnt,global_load_dword,0,none,2,waves_incremented,1024
+vmcnt,global_load_dword,0,none,2,waves,1024
+vmcnt,global_load_dword,0,none,3,vmcnt_before,1
+vmcnt,global_load_dword,0,none,3,vmcnt_after,2
+vmcnt,global_load_dword,0,none,3,waves_incremented,1024
+vmcnt,global_load_dword,0,none,3,waves,1024
+vmcnt,global_load_dword,0,none,4,vmcnt_before,1
+vmcnt,global_load_dword,0,none,4,vmcnt_after,2
+vmcnt,global_load_dword,0,none,4,waves_incremented,1024
+vmcnt,global_load_dword,0,none,4,waves,1024
+issue,s_nop 0,all,none,0,cycles,6.773
+issue,s_nop 0,all,none,0,ns,3.108
+issue,s_nop 0,all,none,1,cycles,6.772
+issue,s_nop 0,all,none,1,ns,3.110
+issue,s_nop 0,all,none,2,cycles,6.773
+issue,s_nop 0,all,none,2,ns,3.108
+issue,s_nop 0,all,none,3,cycles,6.773
+issue,s_nop 0,all,none,3,ns,3.105
+issue,s_nop 0,all,none,4,cycles,6.773
+issue,s_nop 0,all,none,4,ns,3.108
+issue,buffer_inv,all,none,0,cycles,7.777
+issue,buffer_inv,all,none,0,ns,3.586
+issue,buffer_inv,all,none,1,cycles,7.776
+issue,buffer_inv,all,none,1,ns,3.586
+issue,buffer_inv,all,none,2,cycles,7.776
+issue,buffer_inv,all,none,2,ns,3.586
+issue,buffer_inv,all,none,3,cycles,7.776
+issue,buffer_inv,all,none,3,ns,3.586
+issue,buffer_inv,all,none,4,cycles,7.776
+issue,buffer_inv,all,none,4,ns,3.586
+issue,buffer_inv,0,none,0,cycles,7.777
+issue,buffer_inv,0,none,0,ns,3.586
+issue,buffer_inv,0,none,1,cycles,7.776
+issue,buffer_inv,0,none,1,ns,3.586
+issue,buffer_inv,0,none,2,cycles,7.776
+issue,buffer_inv,0,none,2,ns,3.586
+issue,buffer_inv,0,none,3,cycles,7.776
+issue,buffer_inv,0,none,3,ns,3.586
+issue,buffer_inv,0,none,4,cycles,7.776
+issue,buffer_inv,0,none,4,ns,3.586
+issue,buffer_inv sc0,all,none,0,cycles,7.777
+issue,buffer_inv sc0,all,none,0,ns,3.552
+issue,buffer_inv sc0,all,none,1,cycles,7.776
+issue,buffer_inv sc0,all,none,1,ns,3.550
+issue,buffer_inv sc0,all,none,2,cycles,7.776
+issue,buffer_inv sc0,all,none,2,ns,3.552
+issue,buffer_inv sc0,all,none,3,cycles,7.776
+issue,buffer_inv sc0,all,none,3,ns,3.550
+issue,buffer_inv sc0,all,none,4,cycles,7.776
+issue,buffer_inv sc0,all,none,4,ns,3.552
+latency,none,all,none,0,cycles,6.773
+latency,none,all,none,0,ns,3.081
+latency,none,all,none,1,cycles,6.773
+latency,none,all,none,1,ns,3.081
+latency,none,all,none,2,cycles,6.773
+latency,none,all,none,2,ns,3.081
+latency,none,all,none,3,cycles,6.773
+latency,none,all,none,3,ns,3.081
+latency,none,all,none,4,cycles,6.773
+latency,none,all,none,4,ns,3.064
+latency,s_nop 0,all,none,0,cycles,10.773
+latency,s_nop 0,all,none,0,ns,4.868
+latency,s_nop 0,all,none,1,cycles,10.773
+latency,s_nop 0,all,none,1,ns,4.868
+latency,s_nop 0,all,none,2,cycles,10.773
+latency,s_nop 0,all,none,2,ns,4.871
+latency,s_nop 0,all,none,3,cycles,10.773
+latency,s_nop 0,all,none,3,ns,4.871
+latency,s_nop 0,all,none,4,cycles,10.772
+latency,s_nop 0,all,none,4,ns,4.871
+latency,buffer_inv,all,none,0,cycles,91.532
+latency,buffer_inv,all,none,0,ns,41.902
+latency,buffer_inv,all,none,1,cycles,95.517
+latency,buffer_inv,all,none,1,ns,43.550
+latency,buffer_inv,all,none,2,cycles,91.532
+latency,buffer_inv,all,none,2,ns,42.102
+latency,buffer_inv,all,none,3,cycles,95.515
+latency,buffer_inv,all,none,3,ns,43.191
+latency,buffer_inv,all,none,4,cycles,91.532
+latency,buffer_inv,all,none,4,ns,42.090
+latency,buffer_inv,0,none,0,cycles,91.532
+latency,buffer_inv,0,none,0,ns,42.102
+latency,buffer_inv,0,none,1,cycles,95.515
+latency,buffer_inv,0,none,1,ns,43.550
+latency,buffer_inv,0,none,2,cycles,91.533
+latency,buffer_inv,0,none,2,ns,42.087
+latency,buffer_inv,0,none,3,cycles,95.517
+latency,buffer_inv,0,none,3,ns,43.208
+latency,buffer_inv,0,none,4,cycles,91.533
+latency,buffer_inv,0,none,4,ns,42.097
+latency,buffer_inv sc0,all,none,0,cycles,91.532
+latency,buffer_inv sc0,all,none,0,ns,42.114
+latency,buffer_inv sc0,all,none,1,cycles,95.517
+latency,buffer_inv sc0,all,none,1,ns,43.613
+latency,buffer_inv sc0,all,none,2,cycles,91.532
+latency,buffer_inv sc0,all,none,2,ns,42.087
+latency,buffer_inv sc0,all,none,3,cycles,95.515
+latency,buffer_inv sc0,all,none,3,ns,43.223
+latency,buffer_inv sc0,all,none,4,cycles,91.532
+latency,buffer_inv sc0,all,none,4,ns,42.090
+contention[vmem],none,all,s_nop 0,0,cycles,191.926
+contention[vmem],none,all,s_nop 0,0,ns,89.922
+contention[vmem],none,all,s_nop 0,1,cycles,191.926
+contention[vmem],none,all,s_nop 0,1,ns,90.391
+contention[vmem],none,all,s_nop 0,2,cycles,191.926
+contention[vmem],none,all,s_nop 0,2,ns,89.688
+contention[vmem],none,all,s_nop 0,3,cycles,191.930
+contention[vmem],none,all,s_nop 0,3,ns,89.688
+contention[vmem],none,all,s_nop 0,4,cycles,191.930
+contention[vmem],none,all,s_nop 0,4,ns,88.672
+contention[vmem],none,all,buffer_inv,0,cycles,384.008
+contention[vmem],none,all,buffer_inv,0,ns,177.227
+contention[vmem],none,all,buffer_inv,1,cycles,384.012
+contention[vmem],none,all,buffer_inv,1,ns,175.703
+contention[vmem],none,all,buffer_inv,2,cycles,384.012
+contention[vmem],none,all,buffer_inv,2,ns,177.422
+contention[vmem],none,all,buffer_inv,3,cycles,384.008
+contention[vmem],none,all,buffer_inv,3,ns,175.664
+contention[vmem],none,all,buffer_inv,4,cycles,384.008
+contention[vmem],none,all,buffer_inv,4,ns,177.656
+contention-paced[vmem],none,all,s_nop 0,0,cycles,188.121
+contention-paced[vmem],none,all,s_nop 0,0,ns,87.930
+contention-paced[vmem],none,all,s_nop 0,1,cycles,188.125
+contention-paced[vmem],none,all,s_nop 0,1,ns,88.516
+contention-paced[vmem],none,all,s_nop 0,2,cycles,188.121
+contention-paced[vmem],none,all,s_nop 0,2,ns,87.930
+contention-paced[vmem],none,all,s_nop 0,3,cycles,188.125
+contention-paced[vmem],none,all,s_nop 0,3,ns,88.203
+contention-paced[vmem],none,all,s_nop 0,4,cycles,188.121
+contention-paced[vmem],none,all,s_nop 0,4,ns,87.578
+contention-paced[vmem],none,all,buffer_inv,0,cycles,192.047
+contention-paced[vmem],none,all,buffer_inv,0,ns,89.570
+contention-paced[vmem],none,all,buffer_inv,1,cycles,192.051
+contention-paced[vmem],none,all,buffer_inv,1,ns,88.906
+contention-paced[vmem],none,all,buffer_inv,2,cycles,192.059
+contention-paced[vmem],none,all,buffer_inv,2,ns,89.570
+contention-paced[vmem],none,all,buffer_inv,3,cycles,192.055
+contention-paced[vmem],none,all,buffer_inv,3,ns,88.789
+contention-paced[vmem],none,all,buffer_inv,4,cycles,192.055
+contention-paced[vmem],none,all,buffer_inv,4,ns,89.570
+contention[lds],none,all,s_nop 0,0,cycles,135.910
+contention[lds],none,all,s_nop 0,0,ns,62.461
+contention[lds],none,all,s_nop 0,1,cycles,135.934
+contention[lds],none,all,s_nop 0,1,ns,62.891
+contention[lds],none,all,s_nop 0,2,cycles,135.922
+contention[lds],none,all,s_nop 0,2,ns,63.203
+contention[lds],none,all,s_nop 0,3,cycles,135.891
+contention[lds],none,all,s_nop 0,3,ns,63.320
+contention[lds],none,all,s_nop 0,4,cycles,135.895
+contention[lds],none,all,s_nop 0,4,ns,62.969
+contention[lds],none,all,buffer_inv,0,cycles,135.508
+contention[lds],none,all,buffer_inv,0,ns,62.969
+contention[lds],none,all,buffer_inv,1,cycles,135.590
+contention[lds],none,all,buffer_inv,1,ns,63.008
+contention[lds],none,all,buffer_inv,2,cycles,135.582
+contention[lds],none,all,buffer_inv,2,ns,62.695
+contention[lds],none,all,buffer_inv,3,cycles,135.656
+contention[lds],none,all,buffer_inv,3,ns,63.242
+contention[lds],none,all,buffer_inv,4,cycles,135.609
+contention[lds],none,all,buffer_inv,4,ns,62.578
+contention-paced[lds],none,all,s_nop 0,0,cycles,134.984
+contention-paced[lds],none,all,s_nop 0,0,ns,63.086
+contention-paced[lds],none,all,s_nop 0,1,cycles,134.992
+contention-paced[lds],none,all,s_nop 0,1,ns,62.852
+contention-paced[lds],none,all,s_nop 0,2,cycles,134.969
+contention-paced[lds],none,all,s_nop 0,2,ns,62.891
+contention-paced[lds],none,all,s_nop 0,3,cycles,134.891
+contention-paced[lds],none,all,s_nop 0,3,ns,62.617
+contention-paced[lds],none,all,s_nop 0,4,cycles,135.043
+contention-paced[lds],none,all,s_nop 0,4,ns,62.852
+contention-paced[lds],none,all,buffer_inv,0,cycles,134.961
+contention-paced[lds],none,all,buffer_inv,0,ns,62.031
+contention-paced[lds],none,all,buffer_inv,1,cycles,134.820
+contention-paced[lds],none,all,buffer_inv,1,ns,62.227
+contention-paced[lds],none,all,buffer_inv,2,cycles,134.910
+contention-paced[lds],none,all,buffer_inv,2,ns,62.266
+contention-paced[lds],none,all,buffer_inv,3,cycles,134.969
+contention-paced[lds],none,all,buffer_inv,3,ns,62.930
+contention-paced[lds],none,all,buffer_inv,4,cycles,134.984
+contention-paced[lds],none,all,buffer_inv,4,ns,62.305
+contention[mfma],none,all,s_nop 0,0,cycles,265.121
+contention[mfma],none,all,s_nop 0,0,ns,137.188
+contention[mfma],none,all,s_nop 0,1,cycles,265.121
+contention[mfma],none,all,s_nop 0,1,ns,137.031
+contention[mfma],none,all,s_nop 0,2,cycles,265.121
+contention[mfma],none,all,s_nop 0,2,ns,135.234
+contention[mfma],none,all,s_nop 0,3,cycles,265.121
+contention[mfma],none,all,s_nop 0,3,ns,135.117
+contention[mfma],none,all,s_nop 0,4,cycles,265.121
+contention[mfma],none,all,s_nop 0,4,ns,134.883
+contention[mfma],none,all,buffer_inv,0,cycles,264.125
+contention[mfma],none,all,buffer_inv,0,ns,133.359
+contention[mfma],none,all,buffer_inv,1,cycles,264.129
+contention[mfma],none,all,buffer_inv,1,ns,134.336
+contention[mfma],none,all,buffer_inv,2,cycles,264.129
+contention[mfma],none,all,buffer_inv,2,ns,135.742
+contention[mfma],none,all,buffer_inv,3,cycles,264.125
+contention[mfma],none,all,buffer_inv,3,ns,135.703
+contention[mfma],none,all,buffer_inv,4,cycles,264.129
+contention[mfma],none,all,buffer_inv,4,ns,134.727
+contention-paced[mfma],none,all,s_nop 0,0,cycles,264.129
+contention-paced[mfma],none,all,s_nop 0,0,ns,138.672
+contention-paced[mfma],none,all,s_nop 0,1,cycles,264.129
+contention-paced[mfma],none,all,s_nop 0,1,ns,137.461
+contention-paced[mfma],none,all,s_nop 0,2,cycles,264.129
+contention-paced[mfma],none,all,s_nop 0,2,ns,138.672
+contention-paced[mfma],none,all,s_nop 0,3,cycles,264.129
+contention-paced[mfma],none,all,s_nop 0,3,ns,138.633
+contention-paced[mfma],none,all,s_nop 0,4,cycles,264.129
+contention-paced[mfma],none,all,s_nop 0,4,ns,137.695
+contention-paced[mfma],none,all,buffer_inv,0,cycles,264.129
+contention-paced[mfma],none,all,buffer_inv,0,ns,137.461
+contention-paced[mfma],none,all,buffer_inv,1,cycles,264.129
+contention-paced[mfma],none,all,buffer_inv,1,ns,137.617
+contention-paced[mfma],none,all,buffer_inv,2,cycles,264.129
+contention-paced[mfma],none,all,buffer_inv,2,ns,137.539
+contention-paced[mfma],none,all,buffer_inv,3,cycles,264.129
+contention-paced[mfma],none,all,buffer_inv,3,ns,138.945
+contention-paced[mfma],none,all,buffer_inv,4,cycles,264.129
+contention-paced[mfma],none,all,buffer_inv,4,ns,139.062
+cache[coarse],none,all,none,0,l1_to_l2_reads_per_iter,0.0156
+cache[coarse],none,all,none,0,l2_hits_per_iter,0.0123
+cache[coarse],none,all,none,0,l2_misses_per_iter,0.0161
+cache[coarse],none,all,none,1,l1_to_l2_reads_per_iter,0.0156
+cache[coarse],none,all,none,1,l2_hits_per_iter,0.0123
+cache[coarse],none,all,none,1,l2_misses_per_iter,0.0160
+cache[coarse],none,all,none,2,l1_to_l2_reads_per_iter,0.0156
+cache[coarse],none,all,none,2,l2_hits_per_iter,0.0123
+cache[coarse],none,all,none,2,l2_misses_per_iter,0.0161
+cache[coarse],none,all,none,3,l1_to_l2_reads_per_iter,0.0156
+cache[coarse],none,all,none,3,l2_hits_per_iter,0.0123
+cache[coarse],none,all,none,3,l2_misses_per_iter,0.0161
+cache[coarse],none,all,none,4,l1_to_l2_reads_per_iter,0.0156
+cache[coarse],none,all,none,4,l2_hits_per_iter,0.0123
+cache[coarse],none,all,none,4,l2_misses_per_iter,0.0161
+cache[coarse],buffer_inv,all,none,0,l1_to_l2_reads_per_iter,0.0156
+cache[coarse],buffer_inv,all,none,0,l2_hits_per_iter,0.0123
+cache[coarse],buffer_inv,all,none,0,l2_misses_per_iter,0.0161
+cache[coarse],buffer_inv,all,none,1,l1_to_l2_reads_per_iter,0.0156
+cache[coarse],buffer_inv,all,none,1,l2_hits_per_iter,0.0123
+cache[coarse],buffer_inv,all,none,1,l2_misses_per_iter,0.0161
+cache[coarse],buffer_inv,all,none,2,l1_to_l2_reads_per_iter,0.0156
+cache[coarse],buffer_inv,all,none,2,l2_hits_per_iter,0.0123
+cache[coarse],buffer_inv,all,none,2,l2_misses_per_iter,0.0161
+cache[coarse],buffer_inv,all,none,3,l1_to_l2_reads_per_iter,0.0156
+cache[coarse],buffer_inv,all,none,3,l2_hits_per_iter,0.0123
+cache[coarse],buffer_inv,all,none,3,l2_misses_per_iter,0.0160
+cache[coarse],buffer_inv,all,none,4,l1_to_l2_reads_per_iter,0.0156
+cache[coarse],buffer_inv,all,none,4,l2_hits_per_iter,0.0123
+cache[coarse],buffer_inv,all,none,4,l2_misses_per_iter,0.0160
+cache[coarse],buffer_inv sc1,all,none,0,l1_to_l2_reads_per_iter,16.0156
+cache[coarse],buffer_inv sc1,all,none,0,l2_hits_per_iter,16.0123
+cache[coarse],buffer_inv sc1,all,none,0,l2_misses_per_iter,0.0160
+cache[coarse],buffer_inv sc1,all,none,1,l1_to_l2_reads_per_iter,16.0156
+cache[coarse],buffer_inv sc1,all,none,1,l2_hits_per_iter,16.0123
+cache[coarse],buffer_inv sc1,all,none,1,l2_misses_per_iter,0.0160
+cache[coarse],buffer_inv sc1,all,none,2,l1_to_l2_reads_per_iter,16.0156
+cache[coarse],buffer_inv sc1,all,none,2,l2_hits_per_iter,16.0123
+cache[coarse],buffer_inv sc1,all,none,2,l2_misses_per_iter,0.0160
+cache[coarse],buffer_inv sc1,all,none,3,l1_to_l2_reads_per_iter,16.0156
+cache[coarse],buffer_inv sc1,all,none,3,l2_hits_per_iter,16.0123
+cache[coarse],buffer_inv sc1,all,none,3,l2_misses_per_iter,0.0160
+cache[coarse],buffer_inv sc1,all,none,4,l1_to_l2_reads_per_iter,16.0156
+cache[coarse],buffer_inv sc1,all,none,4,l2_hits_per_iter,16.0123
+cache[coarse],buffer_inv sc1,all,none,4,l2_misses_per_iter,0.0160
+cache[coarse+bypass-l1],buffer_inv,all,none,0,l1_to_l2_reads_per_iter,16.0156
+cache[coarse+bypass-l1],buffer_inv,all,none,0,l2_hits_per_iter,16.0123
+cache[coarse+bypass-l1],buffer_inv,all,none,0,l2_misses_per_iter,0.0160
+cache[coarse+bypass-l1],buffer_inv,all,none,1,l1_to_l2_reads_per_iter,16.0156
+cache[coarse+bypass-l1],buffer_inv,all,none,1,l2_hits_per_iter,16.0123
+cache[coarse+bypass-l1],buffer_inv,all,none,1,l2_misses_per_iter,0.0160
+cache[coarse+bypass-l1],buffer_inv,all,none,2,l1_to_l2_reads_per_iter,16.0156
+cache[coarse+bypass-l1],buffer_inv,all,none,2,l2_hits_per_iter,16.0123
+cache[coarse+bypass-l1],buffer_inv,all,none,2,l2_misses_per_iter,0.0160
+cache[coarse+bypass-l1],buffer_inv,all,none,3,l1_to_l2_reads_per_iter,16.0156
+cache[coarse+bypass-l1],buffer_inv,all,none,3,l2_hits_per_iter,16.0123
+cache[coarse+bypass-l1],buffer_inv,all,none,3,l2_misses_per_iter,0.0160
+cache[coarse+bypass-l1],buffer_inv,all,none,4,l1_to_l2_reads_per_iter,16.0156
+cache[coarse+bypass-l1],buffer_inv,all,none,4,l2_hits_per_iter,16.0123
+cache[coarse+bypass-l1],buffer_inv,all,none,4,l2_misses_per_iter,0.0160
+cache[fine],none,all,none,0,l1_to_l2_reads_per_iter,0.0156
+cache[fine],none,all,none,0,l2_hits_per_iter,0.0123
+cache[fine],none,all,none,0,l2_misses_per_iter,0.0160
+cache[fine],none,all,none,1,l1_to_l2_reads_per_iter,0.0156
+cache[fine],none,all,none,1,l2_hits_per_iter,0.0123
+cache[fine],none,all,none,1,l2_misses_per_iter,0.0160
+cache[fine],none,all,none,2,l1_to_l2_reads_per_iter,0.0156
+cache[fine],none,all,none,2,l2_hits_per_iter,0.0123
+cache[fine],none,all,none,2,l2_misses_per_iter,0.0160
+cache[fine],none,all,none,3,l1_to_l2_reads_per_iter,0.0156
+cache[fine],none,all,none,3,l2_hits_per_iter,0.0123
+cache[fine],none,all,none,3,l2_misses_per_iter,0.0160
+cache[fine],none,all,none,4,l1_to_l2_reads_per_iter,0.0156
+cache[fine],none,all,none,4,l2_hits_per_iter,0.0123
+cache[fine],none,all,none,4,l2_misses_per_iter,0.0160
+cache[fine],buffer_inv,all,none,0,l1_to_l2_reads_per_iter,0.0156
+cache[fine],buffer_inv,all,none,0,l2_hits_per_iter,0.0123
+cache[fine],buffer_inv,all,none,0,l2_misses_per_iter,0.0160
+cache[fine],buffer_inv,all,none,1,l1_to_l2_reads_per_iter,0.0156
+cache[fine],buffer_inv,all,none,1,l2_hits_per_iter,0.0123
+cache[fine],buffer_inv,all,none,1,l2_misses_per_iter,0.0160
+cache[fine],buffer_inv,all,none,2,l1_to_l2_reads_per_iter,0.0156
+cache[fine],buffer_inv,all,none,2,l2_hits_per_iter,0.0123
+cache[fine],buffer_inv,all,none,2,l2_misses_per_iter,0.0160
+cache[fine],buffer_inv,all,none,3,l1_to_l2_reads_per_iter,0.0156
+cache[fine],buffer_inv,all,none,3,l2_hits_per_iter,0.0123
+cache[fine],buffer_inv,all,none,3,l2_misses_per_iter,0.0160
+cache[fine],buffer_inv,all,none,4,l1_to_l2_reads_per_iter,0.0156
+cache[fine],buffer_inv,all,none,4,l2_hits_per_iter,0.0123
+cache[fine],buffer_inv,all,none,4,l2_misses_per_iter,0.0160
+cache[fine],buffer_inv sc1,all,none,0,l1_to_l2_reads_per_iter,16.0156
+cache[fine],buffer_inv sc1,all,none,0,l2_hits_per_iter,16.0123
+cache[fine],buffer_inv sc1,all,none,0,l2_misses_per_iter,0.0160
+cache[fine],buffer_inv sc1,all,none,1,l1_to_l2_reads_per_iter,16.0156
+cache[fine],buffer_inv sc1,all,none,1,l2_hits_per_iter,16.0123
+cache[fine],buffer_inv sc1,all,none,1,l2_misses_per_iter,0.0160
+cache[fine],buffer_inv sc1,all,none,2,l1_to_l2_reads_per_iter,16.0156
+cache[fine],buffer_inv sc1,all,none,2,l2_hits_per_iter,16.0123
+cache[fine],buffer_inv sc1,all,none,2,l2_misses_per_iter,0.0160
+cache[fine],buffer_inv sc1,all,none,3,l1_to_l2_reads_per_iter,16.0156
+cache[fine],buffer_inv sc1,all,none,3,l2_hits_per_iter,16.0123
+cache[fine],buffer_inv sc1,all,none,3,l2_misses_per_iter,0.0160
+cache[fine],buffer_inv sc1,all,none,4,l1_to_l2_reads_per_iter,16.0156
+cache[fine],buffer_inv sc1,all,none,4,l2_hits_per_iter,16.0123
+cache[fine],buffer_inv sc1,all,none,4,l2_misses_per_iter,0.0160
+cache[fine+bypass-l1],buffer_inv,all,none,0,l1_to_l2_reads_per_iter,16.0156
+cache[fine+bypass-l1],buffer_inv,all,none,0,l2_hits_per_iter,16.0123
+cache[fine+bypass-l1],buffer_inv,all,none,0,l2_misses_per_iter,0.0160
+cache[fine+bypass-l1],buffer_inv,all,none,1,l1_to_l2_reads_per_iter,16.0156
+cache[fine+bypass-l1],buffer_inv,all,none,1,l2_hits_per_iter,16.0123
+cache[fine+bypass-l1],buffer_inv,all,none,1,l2_misses_per_iter,0.0160
+cache[fine+bypass-l1],buffer_inv,all,none,2,l1_to_l2_reads_per_iter,16.0156
+cache[fine+bypass-l1],buffer_inv,all,none,2,l2_hits_per_iter,16.0123
+cache[fine+bypass-l1],buffer_inv,all,none,2,l2_misses_per_iter,0.0160
+cache[fine+bypass-l1],buffer_inv,all,none,3,l1_to_l2_reads_per_iter,16.0156
+cache[fine+bypass-l1],buffer_inv,all,none,3,l2_hits_per_iter,16.0123
+cache[fine+bypass-l1],buffer_inv,all,none,3,l2_misses_per_iter,0.0160
+cache[fine+bypass-l1],buffer_inv,all,none,4,l1_to_l2_reads_per_iter,16.0156
+cache[fine+bypass-l1],buffer_inv,all,none,4,l2_hits_per_iter,16.0123
+cache[fine+bypass-l1],buffer_inv,all,none,4,l2_misses_per_iter,0.0160
