@@ -1,12 +1,24 @@
-// Microbenchmarks for the cost of `buffer_inv` (no sc bits) on gfx942/gfx950.
+// Microbenchmarks for `buffer_inv` with no scope bits (`BUFFER_INV 0` in MIR)
+// on gfx942/gfx950.
 //
-// All timed sequences are written as inline asm so the measured instruction
-// stream is exact. The compiler's waitcnt insertion does not look inside inline
-// asm, so every test issues its own `s_waitcnt`.
+// Each test measures an instruction under an EXEC condition (all lanes active,
+// or EXEC=0), with buffer_inv as the subject and other instructions as
+// references:
 //
-// Output: CSV on stdout, one row per (test, variant, aggressor, rep):
-//   test,variant,aggressor,rep,cycles_per_iter,ns_per_iter
-// cycles come from s_memtime (shader clock), ns from s_memrealtime (100 MHz).
+//   vmcnt       Does the instruction increment VM_CNT? Read from HW_REG_IB_STS.
+//   issue       Cost of issuing it back-to-back.
+//   latency     Cost of issuing it and waiting with `s_waitcnt vmcnt(0)`.
+//   cache       Does it invalidate the vector L1 or L2?
+//   contention  Does it slow the loads of other waves on the same CU?
+//
+// All measured sequences are inline asm, so the instruction stream is exact.
+// The compiler's waitcnt insertion does not look inside inline asm, so every
+// test issues its own s_waitcnt.
+//
+// Output: long-format CSV on stdout:
+//   test,instruction,exec,aggressor,rep,metric,value
+// Timing metrics are `cycles` (s_memtime, shader clock) and `ns`
+// (s_memrealtime, 100 MHz), per operation or iteration.
 
 #include <hip/hip_runtime.h>
 
@@ -27,33 +39,64 @@
     }                                                                          \
   } while (0)
 
-enum Variant { NONE, NOP, INV, INV_SC0, INV_SC1 };
+//===----------------------------------------------------------------------===//
+// Instructions and EXEC conditions
+//===----------------------------------------------------------------------===//
 
-static const char *variantName(int V) {
-  switch (V) {
+enum Inst { NONE, NOP, INV, INV_SC0, INV_SC1, LOAD };
+
+static const char *instName(int I) {
+  switch (I) {
   case NONE: return "none";
   case NOP: return "s_nop 0";
   case INV: return "buffer_inv";
   case INV_SC0: return "buffer_inv sc0";
   case INV_SC1: return "buffer_inv sc1";
+  case LOAD: return "global_load_dword";
   }
   return "?";
 }
 
-template <int V> __device__ __forceinline__ void op() {
-  if constexpr (V == NOP)
-    asm volatile("s_nop 0" ::: "memory");
-  else if constexpr (V == INV)
-    asm volatile("buffer_inv" ::: "memory");
-  else if constexpr (V == INV_SC0)
-    asm volatile("buffer_inv sc0" ::: "memory");
-  else if constexpr (V == INV_SC1)
-    asm volatile("buffer_inv sc1" ::: "memory");
-}
+enum Exec { EXEC_ALL, EXEC_ZERO };
+
+static const char *execName(int E) { return E == EXEC_ZERO ? "0" : "all"; }
+
+// Invokes EMIT with the asm string for instruction I. LOAD is excluded because
+// it needs operands; the vmcnt test handles it separately.
+#define FOR_INST(I, EMIT)                                                      \
+  if constexpr (I == NONE)                                                     \
+    EMIT("");                                                                  \
+  else if constexpr (I == NOP)                                                 \
+    EMIT("s_nop 0");                                                           \
+  else if constexpr (I == INV)                                                 \
+    EMIT("buffer_inv");                                                        \
+  else if constexpr (I == INV_SC0)                                             \
+    EMIT("buffer_inv sc0");                                                    \
+  else if constexpr (I == INV_SC1)                                             \
+    EMIT("buffer_inv sc1");                                                    \
+  else                                                                         \
+    static_assert(I != LOAD, "LOAD needs operands")
+
+// Wrap the measured instructions in EXEC save/restore. Both conditions use
+// the same number of instructions so their costs are comparable; EXEC_ALL
+// just writes EXEC back unchanged. The asm statement must provide a 64-bit
+// SGPR operand named `save`.
+#define EXEC_BEGIN_ALL "s_mov_b64 %[save], exec\n\ts_mov_b64 exec, %[save]\n\t"
+#define EXEC_BEGIN_ZERO "s_mov_b64 %[save], exec\n\ts_mov_b64 exec, 0\n\t"
+#define EXEC_END "\n\ts_mov_b64 exec, %[save]"
 
 __device__ __forceinline__ void waitVmcnt0() {
   asm volatile("s_waitcnt vmcnt(0)" ::: "memory");
 }
+
+#define SINGLE(OP) asm volatile(OP ::: "memory")
+
+// One instruction, all lanes active.
+template <int I> __device__ __forceinline__ void op() { FOR_INST(I, SINGLE); }
+
+//===----------------------------------------------------------------------===//
+// Timing
+//===----------------------------------------------------------------------===//
 
 struct Timer {
   unsigned long long Cycles, Real;
@@ -72,40 +115,168 @@ struct Timer {
   }
 };
 
-constexpr int Unroll = 16;
+//===----------------------------------------------------------------------===//
+// Test "vmcnt": does the instruction increment VM_CNT?
+//
+//   s_waitcnt vmcnt(0)
+//   global_load (slow)            ; VM_CNT = 1
+//   before = IB_STS
+//   <instruction, under EXEC condition>
+//   after = IB_STS                ; VM_CNT = 2 if the instruction is counted
+//
+// The slow load goes first because VM_CNT decrements in order: the
+// instruction cannot be retired from the count before the load returns, which
+// takes hundreds of cycles, so a fast-completing instruction cannot be
+// mistaken for an uncounted one.
+//===----------------------------------------------------------------------===//
 
-// Test "issue": back-to-back ops with a single wait at the end. Measures the
-// issue cost of the instruction.
-template <int V>
+// CDNA3/CDNA4 ISA, Table 20 (IB_STS): VM_CNT is bits 23:22 (high) and 3:0.
+static unsigned vmCnt(unsigned IbSts) {
+  return (((IbSts >> 22) & 0x3) << 4) | (IbSts & 0xf);
+}
+
+template <int I, int E>
+__global__ void vmcntKernel(unsigned *Before, unsigned *After,
+                            const unsigned *Buf, size_t StrideDwords) {
+  int GlobalWave =
+      blockIdx.x * (blockDim.x / warpSize) + threadIdx.x / warpSize;
+  const unsigned *Addr = Buf + (size_t)GlobalWave * StrideDwords;
+  unsigned Dst, Dst2, B, A;
+  unsigned long long Save;
+#define VMCNT(BEGIN, OP)                                                       \
+  asm volatile("s_waitcnt vmcnt(0)\n\t"                                        \
+               "global_load_dword %[dst], %[addr], off sc0 sc1\n\t"            \
+               "s_getreg_b32 %[before], hwreg(HW_REG_IB_STS)\n\t" BEGIN OP     \
+                   EXEC_END "\n\t"                                             \
+               "s_getreg_b32 %[after], hwreg(HW_REG_IB_STS)\n\t"               \
+               "s_waitcnt vmcnt(0)"                                            \
+               : [dst] "=&v"(Dst), [dst2] "=&v"(Dst2), [before] "=&s"(B),      \
+                 [after] "=&s"(A), [save] "=&s"(Save)                          \
+               : [addr] "v"(Addr)                                              \
+               : "memory")
+#define VMCNT_ALL(OP) VMCNT(EXEC_BEGIN_ALL, OP)
+#define VMCNT_ZERO(OP) VMCNT(EXEC_BEGIN_ZERO, OP)
+#define VMCNT_LOAD "global_load_dword %[dst2], %[addr], off offset:64 sc0 sc1"
+  if constexpr (E == EXEC_ZERO) {
+    if constexpr (I == LOAD)
+      VMCNT_ZERO(VMCNT_LOAD);
+    else
+      FOR_INST(I, VMCNT_ZERO);
+  } else {
+    if constexpr (I == LOAD)
+      VMCNT_ALL(VMCNT_LOAD);
+    else
+      FOR_INST(I, VMCNT_ALL);
+  }
+  (void)Dst;
+  (void)Dst2;
+  if (threadIdx.x % warpSize == 0) {
+    Before[GlobalWave] = B;
+    After[GlobalWave] = A;
+  }
+}
+
+template <int I, int E> static void runVmcnt(int Blocks, int Reps) {
+  constexpr int WavesPerBlock = 4;
+  int Waves = Blocks * WavesPerBlock;
+  // Every wave loads its own line, 16 KiB apart, from a freshly written
+  // buffer, so the load stays outstanding for hundreds of cycles.
+  constexpr size_t StrideDwords = 4096;
+  size_t Dwords = (size_t)Waves * StrideDwords;
+  unsigned *Buf, *DBefore, *DAfter;
+  HIP_CHECK(hipMalloc(&Buf, Dwords * sizeof(unsigned)));
+  HIP_CHECK(hipMalloc(&DBefore, Waves * sizeof(unsigned)));
+  HIP_CHECK(hipMalloc(&DAfter, Waves * sizeof(unsigned)));
+  std::vector<unsigned> HBefore(Waves), HAfter(Waves);
+  for (int Rep = 0; Rep < Reps; ++Rep) {
+    HIP_CHECK(hipMemset(Buf, 0xab, Dwords * sizeof(unsigned)));
+    HIP_CHECK(hipDeviceSynchronize());
+    vmcntKernel<I, E><<<Blocks, 64 * WavesPerBlock>>>(DBefore, DAfter, Buf,
+                                                      StrideDwords);
+    HIP_CHECK(hipGetLastError());
+    HIP_CHECK(hipDeviceSynchronize());
+    HIP_CHECK(hipMemcpy(HBefore.data(), DBefore, Waves * sizeof(unsigned),
+                        hipMemcpyDeviceToHost));
+    HIP_CHECK(hipMemcpy(HAfter.data(), DAfter, Waves * sizeof(unsigned),
+                        hipMemcpyDeviceToHost));
+    std::vector<unsigned> VB, VA;
+    unsigned Incremented = 0;
+    for (int W = 0; W < Waves; ++W) {
+      VB.push_back(vmCnt(HBefore[W]));
+      VA.push_back(vmCnt(HAfter[W]));
+      Incremented += VA.back() == VB.back() + 1;
+    }
+    std::nth_element(VB.begin(), VB.begin() + Waves / 2, VB.end());
+    std::nth_element(VA.begin(), VA.begin() + Waves / 2, VA.end());
+    const char *Inst = instName(I), *Ex = execName(E);
+    printf("vmcnt,%s,%s,none,%d,vmcnt_before,%u\n", Inst, Ex, Rep,
+           VB[Waves / 2]);
+    printf("vmcnt,%s,%s,none,%d,vmcnt_after,%u\n", Inst, Ex, Rep,
+           VA[Waves / 2]);
+    printf("vmcnt,%s,%s,none,%d,waves_incremented,%u\n", Inst, Ex, Rep,
+           Incremented);
+    printf("vmcnt,%s,%s,none,%d,waves,%d\n", Inst, Ex, Rep, Waves);
+  }
+  HIP_CHECK(hipFree(Buf));
+  HIP_CHECK(hipFree(DBefore));
+  HIP_CHECK(hipFree(DAfter));
+}
+
+//===----------------------------------------------------------------------===//
+// Tests "issue" and "latency"
+//
+// issue:   16 back-to-back instructions per loop iteration, one
+//          s_waitcnt vmcnt(0) at the very end.
+// latency: each instruction followed by s_waitcnt vmcnt(0).
+//===----------------------------------------------------------------------===//
+
+constexpr int OpsPerIter = 16; // Must match the `.rept 16` below.
+
+template <int I, int E>
 __global__ void issueKernel(unsigned long long *Cycles, unsigned long long *Real,
                             int Iters) {
   Timer T;
   T.start();
-  for (int I = 0; I < Iters; ++I) {
-#pragma unroll
-    for (int J = 0; J < Unroll; ++J)
-      op<V>();
+  for (int It = 0; It < Iters; ++It) {
+    unsigned long long Save;
+#define ISSUE(BEGIN, OP)                                                       \
+  asm volatile(BEGIN ".rept 16\n\t" OP "\n\t.endr" EXEC_END                    \
+               : [save] "=&s"(Save)::"memory")
+#define ISSUE_ALL(OP) ISSUE(EXEC_BEGIN_ALL, OP)
+#define ISSUE_ZERO(OP) ISSUE(EXEC_BEGIN_ZERO, OP)
+    if constexpr (E == EXEC_ZERO)
+      FOR_INST(I, ISSUE_ZERO);
+    else
+      FOR_INST(I, ISSUE_ALL);
   }
   waitVmcnt0();
   T.stop(Cycles, Real, blockIdx.x);
 }
 
-// Test "latency": each op is followed by `s_waitcnt vmcnt(0)`. Measures the
-// round trip until the op is reported complete.
-template <int V>
+template <int I, int E>
 __global__ void latencyKernel(unsigned long long *Cycles,
                               unsigned long long *Real, int Iters) {
   Timer T;
   T.start();
-  for (int I = 0; I < Iters; ++I) {
-#pragma unroll
-    for (int J = 0; J < Unroll; ++J) {
-      op<V>();
-      waitVmcnt0();
-    }
+  for (int It = 0; It < Iters; ++It) {
+    unsigned long long Save;
+#define LATENCY(BEGIN, OP)                                                     \
+  asm volatile(BEGIN ".rept 16\n\t" OP "\n\ts_waitcnt vmcnt(0)\n\t.endr"       \
+                   EXEC_END                                                    \
+               : [save] "=&s"(Save)::"memory")
+#define LATENCY_ALL(OP) LATENCY(EXEC_BEGIN_ALL, OP)
+#define LATENCY_ZERO(OP) LATENCY(EXEC_BEGIN_ZERO, OP)
+    if constexpr (E == EXEC_ZERO)
+      FOR_INST(I, LATENCY_ZERO);
+    else
+      FOR_INST(I, LATENCY_ALL);
   }
   T.stop(Cycles, Real, blockIdx.x);
 }
+
+//===----------------------------------------------------------------------===//
+// Tests "cache" and "contention"
+//===----------------------------------------------------------------------===//
 
 // Each wave owns LoadsPerIter * 64 dwords (LoadsPerIter * 256 bytes), small
 // enough to stay resident in the vector L1 cache.
@@ -132,31 +303,32 @@ __device__ __forceinline__ void loadFootprint(const unsigned *Base) {
                    : "memory");
   }
   waitVmcnt0();
+  // Keep the loaded registers live until after the wait.
 #pragma unroll
   for (int K = 0; K < LoadsPerIter; ++K)
     asm volatile("" ::"v"(V[K]));
 }
 
-// Test "cache": reload an L1-resident footprint each iteration, with the op
-// issued before the reload. If the op invalidates L1, the reloads miss and
-// the iteration gets slower. The BypassL1 variant (sc1 loads) gives the cost
-// of the same loop when every load misses L1, as the reference.
+// cache: reload an L1-resident footprint each iteration, with instruction I
+// issued before the reload. If I invalidates L1, the reloads miss and the
+// iteration gets slower; the BypassL1 variant (sc1 loads) is the L1-miss
+// reference. With BypassL1 and I = buffer_inv, the reloads hit L2, so this
+// also checks whether buffer_inv invalidates L2.
 //
-// With Aggressor != NONE, the block also runs aggressor waves that only issue
-// the aggressor op in a loop, to measure the effect on other waves of the CU.
-// Paced aggressors follow each op with `s_sleep 1` (about 64 cycles) to model
-// an occasional op rather than a flood. Pacing is a template parameter so the
-// unpaced loop is truly back-to-back.
-template <int V, int Aggressor, bool Paced, bool BypassL1>
+// contention: the same loader loop with I = NONE, while other waves of the
+// same block (and therefore the same CU) issue Aggressor in a loop. Paced
+// aggressors follow each instruction with `s_sleep 1` (about 64 cycles).
+// Pacing is a template parameter so the unpaced loop is truly back-to-back.
+template <int I, int Aggressor, bool Paced, bool BypassL1>
 __global__ void cacheKernel(unsigned long long *Cycles, unsigned long long *Real,
                             const unsigned *Buf, int Iters,
                             int LoaderWavesPerBlock) {
   int Wave = threadIdx.x / warpSize;
   if (Wave >= LoaderWavesPerBlock) {
-    // Aggressor wave: keep issuing the op for longer than the loaders run.
-    for (int I = 0; I < Iters * 4; ++I) {
+    // Aggressor wave: keep issuing for longer than the loaders run.
+    for (int It = 0; It < Iters * 4; ++It) {
 #pragma unroll
-      for (int J = 0; J < Unroll; ++J) {
+      for (int J = 0; J < OpsPerIter; ++J) {
         op<Aggressor>();
         if constexpr (Paced)
           asm volatile("s_sleep 1");
@@ -172,110 +344,16 @@ __global__ void cacheKernel(unsigned long long *Cycles, unsigned long long *Real
 
   Timer T;
   T.start();
-  for (int I = 0; I < Iters; ++I) {
-    op<V>();
+  for (int It = 0; It < Iters; ++It) {
+    op<I>();
     loadFootprint<BypassL1>(Base);
   }
   T.stop(Cycles, Real, GlobalWave);
 }
 
-// Test "vmcnt-exec0": does the op increment vmcnt when EXEC is 0?
-//
-//   v = sentinel
-//   global_load v, slow address        ; vmcnt = 1
-//   exec = 0 ; <op> ; exec = saved      ; vmcnt = 2 if the op is counted
-//   s_waitcnt vmcnt(1)
-//   snapshot = v
-//
-// If the op incremented vmcnt, vmcnt(1) must wait for the earlier load, so the
-// snapshot holds the loaded value. If not, the wait passes immediately and the
-// snapshot still holds the sentinel. Writes 1 per wave if the load had
-// completed, 0 otherwise.
-enum Exec0Variant {
-  E0_NOP,         // s_nop with EXEC=0: never counted (control).
-  E0_INV,         // buffer_inv with EXEC=0: the question.
-  E0_INV_EXEC_ON, // buffer_inv with EXEC unchanged: counted (control).
-  E0_LOAD,        // global_load with EXEC=0: reference.
-};
-
-static const char *exec0Name(int V) {
-  switch (V) {
-  case E0_NOP: return "s_nop 0 (EXEC=0)";
-  case E0_INV: return "buffer_inv (EXEC=0)";
-  case E0_INV_EXEC_ON: return "buffer_inv (EXEC unchanged)";
-  case E0_LOAD: return "global_load_dword (EXEC=0)";
-  }
-  return "?";
-}
-
-constexpr unsigned Exec0Magic = 0xabababab; // hipMemset byte 0xab.
-constexpr unsigned Exec0Sentinel = 0;
-
-template <int V>
-__global__ void exec0Kernel(unsigned *Out, const unsigned *Buf,
-                            size_t StrideDwords) {
-  int GlobalWave =
-      blockIdx.x * (blockDim.x / warpSize) + threadIdx.x / warpSize;
-  const unsigned *Addr = Buf + (size_t)GlobalWave * StrideDwords;
-  unsigned Dst, Snap, Scratch;
-  unsigned long long Save;
-#define EXEC0_ASM(OP, EXEC_OFF)                                                \
-  asm volatile("v_mov_b32 %0, %5\n\t"                                          \
-               "global_load_dword %0, %4, off sc0 sc1\n\t"                     \
-               "s_mov_b64 %1, exec\n\t" EXEC_OFF OP "\n\t"                     \
-               "s_mov_b64 exec, %1\n\t"                                        \
-               "s_waitcnt vmcnt(1)\n\t"                                        \
-               "v_mov_b32 %2, %0\n\t"                                          \
-               "s_waitcnt vmcnt(0)"                                            \
-               : "=&v"(Dst), "=&s"(Save), "=&v"(Snap), "=&v"(Scratch)          \
-               : "v"(Addr), "v"(Exec0Sentinel)                                 \
-               : "memory")
-  if constexpr (V == E0_NOP)
-    EXEC0_ASM("s_nop 0", "s_mov_b64 exec, 0\n\t");
-  else if constexpr (V == E0_INV)
-    EXEC0_ASM("buffer_inv", "s_mov_b64 exec, 0\n\t");
-  else if constexpr (V == E0_INV_EXEC_ON)
-    EXEC0_ASM("buffer_inv", "");
-  else if constexpr (V == E0_LOAD)
-    EXEC0_ASM("global_load_dword %3, %4, off offset:64",
-              "s_mov_b64 exec, 0\n\t");
-#undef EXEC0_ASM
-  (void)Dst;
-  (void)Scratch;
-  if (threadIdx.x % warpSize == 0)
-    Out[GlobalWave] = Snap == Exec0Magic;
-}
-
-template <int V> static void runExec0(int Blocks, int Reps) {
-  constexpr int WavesPerBlock = 4;
-  int Waves = Blocks * WavesPerBlock;
-  // Every wave gets its own line, 16 KiB apart, in a freshly written buffer,
-  // so the load stays outstanding for hundreds of cycles.
-  constexpr size_t StrideDwords = 4096;
-  size_t Dwords = (size_t)Waves * StrideDwords;
-  unsigned *Buf, *DOut;
-  HIP_CHECK(hipMalloc(&Buf, Dwords * sizeof(unsigned)));
-  HIP_CHECK(hipMalloc(&DOut, Waves * sizeof(unsigned)));
-  std::vector<unsigned> Out(Waves);
-  for (int Rep = 0; Rep < Reps; ++Rep) {
-    HIP_CHECK(hipMemset(Buf, 0xab, Dwords * sizeof(unsigned)));
-    HIP_CHECK(hipDeviceSynchronize());
-    exec0Kernel<V><<<Blocks, 64 * WavesPerBlock>>>(DOut, Buf, StrideDwords);
-    HIP_CHECK(hipGetLastError());
-    HIP_CHECK(hipDeviceSynchronize());
-    HIP_CHECK(hipMemcpy(Out.data(), DOut, Waves * sizeof(unsigned),
-                        hipMemcpyDeviceToHost));
-    unsigned Completed = 0;
-    for (unsigned X : Out)
-      Completed += X;
-    // Reuses the CSV schema: cycles_per_iter holds the fraction of waves whose
-    // vmcnt(1) waited for the earlier load; ns_per_iter holds the wave count.
-    printf("vmcnt-exec0,%s,none,%d,%.4f,%d\n", exec0Name(V), Rep,
-           (double)Completed / Waves, Waves);
-  }
-  HIP_CHECK(hipFree(Buf));
-  HIP_CHECK(hipFree(DOut));
-}
+//===----------------------------------------------------------------------===//
+// Host harness
+//===----------------------------------------------------------------------===//
 
 struct Options {
   int Reps = 5;
@@ -283,25 +361,33 @@ struct Options {
   int Blocks = 0; // 0 = number of CUs.
 };
 
-static void emit(const char *Test, int V, int Aggressor, int Rep,
-                 const std::vector<unsigned long long> &Cycles,
-                 const std::vector<unsigned long long> &Real,
-                 double OpsPerSample) {
-  // Report the median sample for this rep.
+struct TestId {
+  const char *Test;
+  int I, E, Aggressor;
+};
+
+static void emitTiming(const TestId &Id, int Rep,
+                       const std::vector<unsigned long long> &Cycles,
+                       const std::vector<unsigned long long> &Real,
+                       double OpsPerSample) {
+  // Report the median wave for this rep.
   std::vector<double> C, R;
-  for (size_t I = 0; I < Cycles.size(); ++I) {
-    C.push_back(Cycles[I] / OpsPerSample);
-    R.push_back(Real[I] * 10.0 / OpsPerSample); // 100 MHz -> 10 ns per tick.
+  for (size_t S = 0; S < Cycles.size(); ++S) {
+    C.push_back(Cycles[S] / OpsPerSample);
+    R.push_back(Real[S] * 10.0 / OpsPerSample); // 100 MHz -> 10 ns per tick.
   }
   std::nth_element(C.begin(), C.begin() + C.size() / 2, C.end());
   std::nth_element(R.begin(), R.begin() + R.size() / 2, R.end());
-  printf("%s,%s,%s,%d,%.3f,%.3f\n", Test, variantName(V),
-         variantName(Aggressor), Rep, C[C.size() / 2], R[R.size() / 2]);
+  const char *Agg = instName(Id.Aggressor);
+  printf("%s,%s,%s,%s,%d,cycles,%.3f\n", Id.Test, instName(Id.I),
+         execName(Id.E), Agg, Rep, C[C.size() / 2]);
+  printf("%s,%s,%s,%s,%d,ns,%.3f\n", Id.Test, instName(Id.I), execName(Id.E),
+         Agg, Rep, R[R.size() / 2]);
 }
 
 template <typename LaunchFn>
-static void runTest(const char *Test, int V, int Aggressor, int Slots,
-                    double OpsPerSample, const Options &O, LaunchFn Launch) {
+static void runTimed(const TestId &Id, int Slots, double OpsPerSample,
+                     const Options &O, LaunchFn Launch) {
   unsigned long long *DCycles, *DReal;
   HIP_CHECK(hipMalloc(&DCycles, Slots * sizeof(unsigned long long)));
   HIP_CHECK(hipMalloc(&DReal, Slots * sizeof(unsigned long long)));
@@ -316,43 +402,48 @@ static void runTest(const char *Test, int V, int Aggressor, int Slots,
                         hipMemcpyDeviceToHost));
     HIP_CHECK(hipMemcpy(Real.data(), DReal, Slots * sizeof(Real[0]),
                         hipMemcpyDeviceToHost));
-    emit(Test, V, Aggressor, Rep, Cycles, Real, OpsPerSample);
+    emitTiming(Id, Rep, Cycles, Real, OpsPerSample);
   }
   HIP_CHECK(hipFree(DCycles));
   HIP_CHECK(hipFree(DReal));
 }
 
-template <int V> static void runIssueAndLatency(const Options &O) {
+template <int I, int E> static void runIssue(const Options &O) {
   int B = O.Blocks;
-  double Ops = (double)O.Iters * Unroll;
-  runTest("issue", V, NONE, B, Ops, O, [&](auto *C, auto *R) {
-    issueKernel<V><<<B, 64>>>(C, R, O.Iters);
-  });
-  runTest("latency", V, NONE, B, Ops, O, [&](auto *C, auto *R) {
-    latencyKernel<V><<<B, 64>>>(C, R, O.Iters);
-  });
+  runTimed({"issue", I, E, NONE}, B, (double)O.Iters * OpsPerIter, O,
+           [&](auto *C, auto *R) {
+             issueKernel<I, E><<<B, 64>>>(C, R, O.Iters);
+           });
 }
 
-template <int V, int Aggressor, bool Paced = false, bool BypassL1 = false>
+template <int I, int E> static void runLatency(const Options &O) {
+  int B = O.Blocks;
+  runTimed({"latency", I, E, NONE}, B, (double)O.Iters * OpsPerIter, O,
+           [&](auto *C, auto *R) {
+             latencyKernel<I, E><<<B, 64>>>(C, R, O.Iters);
+           });
+}
+
+template <int I, int Aggressor, bool Paced = false, bool BypassL1 = false>
 static void runCache(const char *Test, const Options &O, const unsigned *Buf,
                      int LoaderWaves, int TotalWaves) {
   int B = O.Blocks;
-  runTest(Test, V, Aggressor, B * LoaderWaves, O.Iters, O,
-          [&](auto *C, auto *R) {
-            cacheKernel<V, Aggressor, Paced, BypassL1>
-                <<<B, 64 * TotalWaves>>>(C, R, Buf, O.Iters, LoaderWaves);
-          });
+  runTimed({Test, I, EXEC_ALL, Aggressor}, B * LoaderWaves, O.Iters, O,
+           [&](auto *C, auto *R) {
+             cacheKernel<I, Aggressor, Paced, BypassL1>
+                 <<<B, 64 * TotalWaves>>>(C, R, Buf, O.Iters, LoaderWaves);
+           });
 }
 
 int main(int Argc, char **Argv) {
   Options O;
-  for (int I = 1; I < Argc; ++I) {
-    if (!strcmp(Argv[I], "--reps") && I + 1 < Argc)
-      O.Reps = atoi(Argv[++I]);
-    else if (!strcmp(Argv[I], "--iters") && I + 1 < Argc)
-      O.Iters = atoi(Argv[++I]);
-    else if (!strcmp(Argv[I], "--blocks") && I + 1 < Argc)
-      O.Blocks = atoi(Argv[++I]);
+  for (int A = 1; A < Argc; ++A) {
+    if (!strcmp(Argv[A], "--reps") && A + 1 < Argc)
+      O.Reps = atoi(Argv[++A]);
+    else if (!strcmp(Argv[A], "--iters") && A + 1 < Argc)
+      O.Iters = atoi(Argv[++A]);
+    else if (!strcmp(Argv[A], "--blocks") && A + 1 < Argc)
+      O.Blocks = atoi(Argv[++A]);
     else {
       fprintf(stderr, "usage: %s [--reps N] [--iters N] [--blocks N]\n",
               Argv[0]);
@@ -372,64 +463,68 @@ int main(int Argc, char **Argv) {
           Prop.name, Prop.gcnArchName, Prop.multiProcessorCount, O.Blocks,
           O.Iters, O.Reps);
 
-  printf("test,variant,aggressor,rep,cycles_per_iter,ns_per_iter\n");
+  printf("test,instruction,exec,aggressor,rep,metric,value\n");
 
-  runExec0<E0_NOP>(O.Blocks, O.Reps);
-  runExec0<E0_INV>(O.Blocks, O.Reps);
-  runExec0<E0_INV_EXEC_ON>(O.Blocks, O.Reps);
-  runExec0<E0_LOAD>(O.Blocks, O.Reps);
+  // vmcnt: buffer_inv with all lanes and with EXEC=0, against s_nop (never
+  // counted) and global_load (always counted).
+  runVmcnt<NOP, EXEC_ALL>(O.Blocks, O.Reps);
+  runVmcnt<NOP, EXEC_ZERO>(O.Blocks, O.Reps);
+  runVmcnt<INV, EXEC_ALL>(O.Blocks, O.Reps);
+  runVmcnt<INV, EXEC_ZERO>(O.Blocks, O.Reps);
+  runVmcnt<LOAD, EXEC_ALL>(O.Blocks, O.Reps);
+  runVmcnt<LOAD, EXEC_ZERO>(O.Blocks, O.Reps);
 
-  runIssueAndLatency<NONE>(O);
-  runIssueAndLatency<NOP>(O);
-  runIssueAndLatency<INV>(O);
-  runIssueAndLatency<INV_SC0>(O);
+  // issue and latency: buffer_inv with all lanes and with EXEC=0, against
+  // s_nop and buffer_inv sc0. Latency also reports `none` (only the wait).
+  runIssue<NOP, EXEC_ALL>(O);
+  runIssue<INV, EXEC_ALL>(O);
+  runIssue<INV, EXEC_ZERO>(O);
+  runIssue<INV_SC0, EXEC_ALL>(O);
+  runLatency<NONE, EXEC_ALL>(O);
+  runLatency<NOP, EXEC_ALL>(O);
+  runLatency<INV, EXEC_ALL>(O);
+  runLatency<INV, EXEC_ZERO>(O);
+  runLatency<INV_SC0, EXEC_ALL>(O);
 
-  // Cache tests: one loader wave per block without aggressors; four loader
-  // waves plus four aggressor waves per block with aggressors.
-  constexpr int AggLoaders = 4, AggTotal = 8;
-  size_t Dwords = (size_t)O.Blocks * AggLoaders * DwordsPerWave;
-  unsigned *Buf;
-  HIP_CHECK(hipMalloc(&Buf, Dwords * sizeof(unsigned)));
-  HIP_CHECK(hipMemset(Buf, 0, Dwords * sizeof(unsigned)));
-
+  // cache: one loader wave per block. contention: four loader waves plus four
+  // aggressor waves per block.
+  constexpr int ContentionLoaders = 4, ContentionWaves = 8;
+  size_t Dwords = (size_t)O.Blocks * ContentionLoaders * DwordsPerWave;
+  unsigned *Coarse, *Fine;
+  HIP_CHECK(hipMalloc(&Coarse, Dwords * sizeof(unsigned)));
+  HIP_CHECK(hipMemset(Coarse, 0, Dwords * sizeof(unsigned)));
   // The same footprint in fine-grained memory, in case the instruction's
   // effect on L1 differs by memory type.
-  unsigned *FineBuf;
-  HIP_CHECK(hipExtMallocWithFlags((void **)&FineBuf, Dwords * sizeof(unsigned),
+  HIP_CHECK(hipExtMallocWithFlags((void **)&Fine, Dwords * sizeof(unsigned),
                                   hipDeviceMallocFinegrained));
-  HIP_CHECK(hipMemset(FineBuf, 0, Dwords * sizeof(unsigned)));
+  HIP_CHECK(hipMemset(Fine, 0, Dwords * sizeof(unsigned)));
 
-  for (auto [Name, B] : {std::pair<const char *, const unsigned *>{
-                             "cache[coarse]", Buf},
-                         {"cache[fine]", FineBuf}}) {
-    runCache<NONE, NONE>(Name, O, B, 1, 1);
-    // Calibration: the same reloads with sc1 loads, which bypass L1.
-    runCache<NONE, NONE, false, true>(
-        Name == std::string("cache[coarse]") ? "cache[coarse+bypass-l1]"
-                                             : "cache[fine+bypass-l1]",
-        O, B, 1, 1);
-    runCache<INV, NONE>(Name, O, B, 1, 1);
-    // L2 check: the L1-bypassing reloads hit L2; if buffer_inv invalidated
-    // L2, they would go to memory instead.
-    runCache<INV, NONE, false, true>(
-        Name == std::string("cache[coarse]") ? "cache[coarse+bypass-l1]"
-                                             : "cache[fine+bypass-l1]",
-        O, B, 1, 1);
-    runCache<INV_SC0, NONE>(Name, O, B, 1, 1);
-    runCache<INV_SC1, NONE>(Name, O, B, 1, 1);
+  struct Mem {
+    const char *Test, *BypassTest;
+    const unsigned *Buf;
+  };
+  for (const Mem &M : {Mem{"cache[coarse]", "cache[coarse+bypass-l1]", Coarse},
+                       Mem{"cache[fine]", "cache[fine+bypass-l1]", Fine}}) {
+    runCache<NONE, NONE>(M.Test, O, M.Buf, 1, 1);
+    runCache<NONE, NONE, false, true>(M.BypassTest, O, M.Buf, 1, 1);
+    runCache<INV, NONE>(M.Test, O, M.Buf, 1, 1);
+    runCache<INV, NONE, false, true>(M.BypassTest, O, M.Buf, 1, 1);
+    runCache<INV_SC0, NONE>(M.Test, O, M.Buf, 1, 1);
+    runCache<INV_SC1, NONE>(M.Test, O, M.Buf, 1, 1);
   }
 
-  runCache<NONE, NOP>("cache+aggressor", O, Buf, AggLoaders, AggTotal);
-  runCache<NONE, INV>("cache+aggressor", O, Buf, AggLoaders, AggTotal);
-  runCache<NONE, INV_SC0>("cache+aggressor", O, Buf, AggLoaders, AggTotal);
+  runCache<NONE, NOP>("contention", O, Coarse, ContentionLoaders,
+                      ContentionWaves);
+  runCache<NONE, INV>("contention", O, Coarse, ContentionLoaders,
+                      ContentionWaves);
+  runCache<NONE, INV_SC0>("contention", O, Coarse, ContentionLoaders,
+                          ContentionWaves);
+  runCache<NONE, NOP, true>("contention-paced", O, Coarse, ContentionLoaders,
+                            ContentionWaves);
+  runCache<NONE, INV, true>("contention-paced", O, Coarse, ContentionLoaders,
+                            ContentionWaves);
 
-  runCache<NONE, NOP, true>("cache+paced-aggressor", O, Buf, AggLoaders,
-                            AggTotal);
-  runCache<NONE, INV, true>("cache+paced-aggressor", O, Buf, AggLoaders,
-                            AggTotal);
-
-  HIP_CHECK(hipFree(FineBuf));
-
-  HIP_CHECK(hipFree(Buf));
+  HIP_CHECK(hipFree(Fine));
+  HIP_CHECK(hipFree(Coarse));
   return 0;
 }

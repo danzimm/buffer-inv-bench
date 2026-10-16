@@ -1,7 +1,9 @@
 # buffer_inv microbenchmarks
 
-Measures what `buffer_inv` with no `sc` bits costs on gfx942 (MI300) and
-gfx950 (MI350), and whether it increments vmcnt when EXEC is 0.
+Measures `buffer_inv` with no `sc` bits (`BUFFER_INV 0` in MIR) on gfx942
+(MI300) and gfx950 (MI350): whether it increments VM_CNT, what it costs, and
+whether it invalidates caches. Where it matters, each test is run with all
+lanes active and with EXEC=0.
 
 Requirements: ROCm (`hipcc`, `rocminfo`) and Python 3.6+. Nothing else.
 
@@ -16,11 +18,13 @@ If ROCm isn't in `/opt/rocm`, set `ROCM_PATH`.
 
 Tests (all instruction sequences are inline asm, so they are exact):
 
-- **vmcnt with EXEC=0**: functional check of whether the instruction
-  increments vmcnt, using a sentinel register and `s_waitcnt vmcnt(1)`.
-- **Issue cost**: back-to-back instructions.
-- **Completion latency**: each instruction followed by `s_waitcnt vmcnt(0)`.
-- **L1-resident reload**: whether the instruction invalidates L1 (or L2),
-  calibrated against reloads that bypass L1 with `sc1` loads.
-- **Effect on other waves**: loader waves on the same CU while other waves
-  issue the instruction back-to-back, or paced with `s_sleep 1`.
+- **vmcnt**: reads VM_CNT from `HW_REG_IB_STS` before and after the
+  instruction, with a slow load outstanding so VM_CNT can't drain in between.
+  `s_nop` and `global_load_dword` are the references. All lanes and EXEC=0.
+- **issue**: 16 back-to-back instructions per iteration. All lanes and EXEC=0.
+- **latency**: each instruction followed by `s_waitcnt vmcnt(0)`. All lanes and
+  EXEC=0.
+- **cache**: whether the instruction invalidates L1 or L2, calibrated against
+  reloads that bypass L1 with `sc1` loads. Coarse- and fine-grained memory.
+- **contention**: loader waves on the same CU while other waves issue the
+  instruction back-to-back, or paced with `s_sleep 1`.

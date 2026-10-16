@@ -69,16 +69,23 @@ def build(arch, hipcc, out):
     subprocess.run(cmd, check=True)
 
 
-def summarize(rows):
-    """Median over reps, keyed by (test, variant, aggressor)."""
-    groups = {}
-    for row in rows:
-        key = (row["test"], row["variant"], row["aggressor"])
-        groups.setdefault(key, []).append(
-            (float(row["cycles_per_iter"]), float(row["ns_per_iter"])))
-    return {key: (statistics.median(c for c, _ in vals),
-                  statistics.median(n for _, n in vals))
-            for key, vals in groups.items()}
+class Results:
+    """Medians over reps of the long-format CSV."""
+
+    def __init__(self, rows):
+        groups = {}
+        for row in rows:
+            key = (row["test"], row["instruction"], row["exec"],
+                   row["aggressor"], row["metric"])
+            groups.setdefault(key, []).append(float(row["value"]))
+        self.medians = {k: statistics.median(v) for k, v in groups.items()}
+        self.mins = {k: min(v) for k, v in groups.items()}
+
+    def get(self, test, inst, metric, exec_="all", aggressor="none"):
+        return self.medians.get((test, inst, exec_, aggressor, metric))
+
+    def min(self, test, inst, metric, exec_="all", aggressor="none"):
+        return self.mins.get((test, inst, exec_, aggressor, metric))
 
 
 def table(title, note, header, lines):
@@ -89,101 +96,119 @@ def table(title, note, header, lines):
     return "\n".join(out) + "\n"
 
 
-def report(summary, arch, device, rocm):
+def exec_label(exec_):
+    return "EXEC=0" if exec_ == "0" else "all lanes"
+
+
+def pct(val, base):
+    return "{:+.1f}%".format(100 * (val / base - 1))
+
+
+def report(res, arch, device, rocm):
     out = ["## buffer_inv microbenchmarks: {} ({})".format(device, arch), "",
            "ROCm {}. Medians over reps; each rep is the median wave.".format(
                rocm), ""]
 
-    def get(test, variant, aggressor="none"):
-        return summary.get((test, variant, aggressor))
-
-    # For vmcnt-exec0, the "cycles" column holds the fraction of waves whose
-    # s_waitcnt vmcnt(1) waited for the earlier load, and "ns" the wave count.
+    # vmcnt
     lines = []
-    for variant in ["s_nop 0 (EXEC=0)", "buffer_inv (EXEC=0)",
-                    "buffer_inv (EXEC unchanged)",
-                    "global_load_dword (EXEC=0)"]:
-        val = get("vmcnt-exec0", variant)
-        if val:
-            lines.append(["`{}`".format(variant), "{:.0f} / {:.0f}".format(
-                val[0] * val[1], val[1]),
-                "yes" if val[0] == 1 else "no" if val[0] == 0 else "mixed"])
+    for inst, exec_ in [("s_nop 0", "all"), ("s_nop 0", "0"),
+                        ("buffer_inv", "all"), ("buffer_inv", "0"),
+                        ("global_load_dword", "all"),
+                        ("global_load_dword", "0")]:
+        before = res.get("vmcnt", inst, "vmcnt_before", exec_)
+        after = res.get("vmcnt", inst, "vmcnt_after", exec_)
+        waves = res.get("vmcnt", inst, "waves", exec_)
+        # Worst rep, so a single bad rep is not hidden by the median.
+        inc = res.min("vmcnt", inst, "waves_incremented", exec_)
+        if None in (before, after, waves, inc):
+            continue
+        verdict = "yes" if inc == waves else "no" if inc == 0 else "mixed"
+        lines.append(["`{}`".format(inst), exec_label(exec_),
+                      "{:.0f} → {:.0f}".format(before, after),
+                      "{:.0f} / {:.0f}".format(inc, waves), verdict])
     out.append(table(
-        "Does the instruction increment vmcnt?",
-        "Sequence: slow `global_load` into a sentinel register; instruction "
-        "(with EXEC as listed); `s_waitcnt vmcnt(1)`; copy the register. The "
-        "copy holds the loaded value only if the instruction incremented "
-        "vmcnt, forcing vmcnt(1) to wait for the load.",
-        ["instruction", "waves where vmcnt(1) waited", "increments vmcnt"],
-        lines))
+        "Does the instruction increment VM_CNT?",
+        "VM_CNT read from `HW_REG_IB_STS` (bits 23:22 and 3:0) right after a "
+        "slow `global_load`, and again right after the instruction. The load "
+        "keeps VM_CNT from draining in between, since VM_CNT decrements in "
+        "order. \"Waves incremented\" is the worst rep.",
+        ["instruction", "EXEC", "VM_CNT before → after",
+         "waves incremented", "increments VM_CNT"], lines))
 
-    for test, title, note in [
+    # issue and latency
+    for test, title, note, cases in [
         ("issue", "Issue cost",
-         "Back-to-back instructions, one `s_waitcnt vmcnt(0)` at the end. "
-         "Cycles per instruction; `none` is loop overhead."),
+         "16 back-to-back instructions per iteration inside an EXEC "
+         "save/restore, one `s_waitcnt vmcnt(0)` at the end. Cycles per "
+         "instruction, including about 0.75 cycles of loop and EXEC "
+         "save/restore overhead.",
+         [("s_nop 0", "all"), ("buffer_inv", "all"), ("buffer_inv", "0"),
+          ("buffer_inv sc0", "all")]),
         ("latency", "Completion latency",
          "Each instruction followed by `s_waitcnt vmcnt(0)`. Cycles per "
-         "instruction + wait."),
+         "instruction + wait; `none` is the wait alone.",
+         [("none", "all"), ("s_nop 0", "all"), ("buffer_inv", "all"),
+          ("buffer_inv", "0"), ("buffer_inv sc0", "all")]),
     ]:
         lines = []
-        for variant in ["none", "s_nop 0", "buffer_inv", "buffer_inv sc0"]:
-            val = get(test, variant)
-            if val:
-                lines.append([variant, "{:.1f}".format(val[0]),
-                              "{:.1f}".format(val[1])])
-        out.append(table(title, note, ["instruction", "cycles", "ns"], lines))
+        for inst, exec_ in cases:
+            cyc = res.get(test, inst, "cycles", exec_)
+            ns = res.get(test, inst, "ns", exec_)
+            if cyc is not None:
+                lines.append(["`{}`".format(inst), exec_label(exec_),
+                              "{:.1f}".format(cyc), "{:.1f}".format(ns)])
+        out.append(table(title, note, ["instruction", "EXEC", "cycles", "ns"],
+                         lines))
 
+    # cache
     for mem, desc in [("coarse", "coarse-grained (`hipMalloc`)"),
                       ("fine", "fine-grained (`hipDeviceMallocFinegrained`)")]:
         test = "cache[{}]".format(mem)
-        base = get(test, "none")
+        bypass = "cache[{}+bypass-l1]".format(mem)
+        base = res.get(test, "none", "cycles")
+        rows = [("nothing (L1 hits)", test, "none"),
+                ("nothing, reloads bypass L1 with sc1 (L1-miss reference)",
+                 bypass, "none"),
+                ("`buffer_inv`", test, "buffer_inv"),
+                ("`buffer_inv sc0`", test, "buffer_inv sc0"),
+                ("`buffer_inv sc1`", test, "buffer_inv sc1"),
+                ("`buffer_inv`, reloads bypass L1 (L2 check)", bypass,
+                 "buffer_inv")]
         lines = []
-        rows = [("none", test, "none"),
-                ("none, reloads use sc1 (bypass L1; L1-miss reference)",
-                 "cache[{}+bypass-l1]".format(mem), "none")]
-        rows += [(v, test, v) for v in ["buffer_inv", "buffer_inv sc0",
-                                        "buffer_inv sc1"]]
-        rows.append(("buffer_inv, reloads use sc1 (L2 check)",
-                     "cache[{}+bypass-l1]".format(mem), "buffer_inv"))
-        for label, row_test, variant in rows:
-            val = get(row_test, variant)
-            if val and base:
-                lines.append([label, "{:.1f}".format(val[0]),
-                              "{:+.1f}%".format(100 * (val[0] / base[0] - 1))])
+        for label, row_test, inst in rows:
+            val = res.get(row_test, inst, "cycles")
+            if val is not None and base:
+                lines.append([label, "{:.1f}".format(val), pct(val, base)])
         out.append(table(
-            "L1-resident reload, {} memory".format(mem),
+            "L1/L2 invalidation, {} memory".format(mem),
             "Per iteration: the instruction, then 8 reloads of a 2 KiB "
             "footprint in {} memory and `s_waitcnt vmcnt(0)`. If the "
-            "instruction invalidated L1, the reloads would cost at least as "
-            "much as the sc1 (L1-bypass) reference.".format(desc),
-            ["instruction before reload", "cycles/iter", "vs none"], lines))
+            "instruction invalidated L1, its row would cost at least as much "
+            "as the L1-miss reference; the L2 check would go to memory if it "
+            "invalidated L2.".format(desc),
+            ["before the reload", "cycles/iter", "vs nothing"], lines))
 
-    base = get("cache+aggressor", "none", "s_nop 0")
-    lines = []
-    for aggressor in ["s_nop 0", "buffer_inv", "buffer_inv sc0"]:
-        val = get("cache+aggressor", "none", aggressor)
-        if val and base:
-            lines.append([aggressor, "{:.1f}".format(val[0]),
-                          "{:+.1f}%".format(100 * (val[0] / base[0] - 1))])
-    out.append(table(
-        "Effect on other waves",
-        "4 waves per block reload their L1-resident footprint while 4 other "
-        "waves in the same block issue the aggressor instruction in a loop.",
-        ["aggressor instruction", "loader cycles/iter", "vs s_nop 0"], lines))
-
-    base = get("cache+paced-aggressor", "none", "s_nop 0")
-    lines = []
-    for aggressor in ["s_nop 0", "buffer_inv"]:
-        val = get("cache+paced-aggressor", "none", aggressor)
-        if val and base:
-            lines.append([aggressor, "{:.1f}".format(val[0]),
-                          "{:+.1f}%".format(100 * (val[0] / base[0] - 1))])
-    out.append(table(
-        "Effect on other waves, paced",
-        "Same as above, but each aggressor instruction is followed by "
-        "`s_sleep 1` (about 64 cycles), i.e. occasional rather than "
-        "back-to-back.",
-        ["aggressor instruction", "loader cycles/iter", "vs s_nop 0"], lines))
+    # contention
+    for test, title, note, aggressors in [
+        ("contention", "Effect on other waves, back-to-back",
+         "4 waves per CU reload their L1-resident footprint while 4 other "
+         "waves of the same block issue the aggressor instruction in a loop.",
+         ["s_nop 0", "buffer_inv", "buffer_inv sc0"]),
+        ("contention-paced", "Effect on other waves, paced",
+         "Same, but each aggressor instruction is followed by `s_sleep 1` "
+         "(about 64 cycles).",
+         ["s_nop 0", "buffer_inv"]),
+    ]:
+        base = res.get(test, "none", "cycles", aggressor="s_nop 0")
+        lines = []
+        for agg in aggressors:
+            val = res.get(test, "none", "cycles", aggressor=agg)
+            if val is not None and base:
+                lines.append(["`{}`".format(agg), "{:.1f}".format(val),
+                              pct(val, base)])
+        out.append(table(title, note, ["aggressor instruction",
+                                       "loader cycles/iter", "vs s_nop 0"],
+                         lines))
     return "\n".join(out)
 
 
@@ -222,7 +247,7 @@ def main():
         with open(args.csv, "w") as f:
             f.write(proc.stdout)
     rows = list(csv.DictReader(io.StringIO(proc.stdout)))
-    print(report(summarize(rows), arch, device, rocm_version()))
+    print(report(Results(rows), arch, device, rocm_version()))
 
 
 if __name__ == "__main__":
