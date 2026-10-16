@@ -146,92 +146,36 @@ __global__ void vmcntKernel(unsigned *Before, unsigned *After,
   const unsigned *Addr = Buf + (size_t)GlobalWave * StrideDwords;
   unsigned Dst, Dst2, B, A;
   unsigned long long Save;
+  // The whole sequence, with EXEC_SET and OP filled in per case below.
+#define VMCNT(EXEC_SET, OP)                                                    \
+  asm volatile("s_waitcnt vmcnt(0)\n\t"                                        \
+               "global_load_dword %[dst], %[addr], off sc0 sc1\n\t"            \
+               "s_getreg_b32 %[before], hwreg(HW_REG_IB_STS)\n\t"              \
+               "s_mov_b64 %[save], exec\n\t" EXEC_SET "\n\t" OP "\n\t"         \
+               "s_mov_b64 exec, %[save]\n\t"                                   \
+               "s_getreg_b32 %[after], hwreg(HW_REG_IB_STS)\n\t"               \
+               "s_waitcnt vmcnt(0)"                                            \
+               : [dst] "=&v"(Dst), [dst2] "=&v"(Dst2), [before] "=&s"(B),      \
+                 [after] "=&s"(A), [save] "=&s"(Save)                          \
+               : [addr] "v"(Addr)                                              \
+               : "memory")
   if constexpr (I == NOP && E == EXEC_ALL)
-    asm volatile("s_waitcnt vmcnt(0)\n\t"
-                 "global_load_dword %[dst], %[addr], off sc0 sc1\n\t"
-                 "s_getreg_b32 %[before], hwreg(HW_REG_IB_STS)\n\t"
-                 "s_mov_b64 %[save], exec\n\t"
-                 "s_mov_b64 exec, %[save]\n\t"
-                 "s_nop 0\n\t"
-                 "s_mov_b64 exec, %[save]\n\t"
-                 "s_getreg_b32 %[after], hwreg(HW_REG_IB_STS)\n\t"
-                 "s_waitcnt vmcnt(0)"
-                 : [dst] "=&v"(Dst), [dst2] "=&v"(Dst2), [before] "=&s"(B),
-                   [after] "=&s"(A), [save] "=&s"(Save)
-                 : [addr] "v"(Addr)
-                 : "memory");
+    VMCNT("s_mov_b64 exec, %[save]", "s_nop 0");
   else if constexpr (I == NOP && E == EXEC_ZERO)
-    asm volatile("s_waitcnt vmcnt(0)\n\t"
-                 "global_load_dword %[dst], %[addr], off sc0 sc1\n\t"
-                 "s_getreg_b32 %[before], hwreg(HW_REG_IB_STS)\n\t"
-                 "s_mov_b64 %[save], exec\n\t"
-                 "s_mov_b64 exec, 0\n\t"
-                 "s_nop 0\n\t"
-                 "s_mov_b64 exec, %[save]\n\t"
-                 "s_getreg_b32 %[after], hwreg(HW_REG_IB_STS)\n\t"
-                 "s_waitcnt vmcnt(0)"
-                 : [dst] "=&v"(Dst), [dst2] "=&v"(Dst2), [before] "=&s"(B),
-                   [after] "=&s"(A), [save] "=&s"(Save)
-                 : [addr] "v"(Addr)
-                 : "memory");
+    VMCNT("s_mov_b64 exec, 0", "s_nop 0");
   else if constexpr (I == INV && E == EXEC_ALL)
-    asm volatile("s_waitcnt vmcnt(0)\n\t"
-                 "global_load_dword %[dst], %[addr], off sc0 sc1\n\t"
-                 "s_getreg_b32 %[before], hwreg(HW_REG_IB_STS)\n\t"
-                 "s_mov_b64 %[save], exec\n\t"
-                 "s_mov_b64 exec, %[save]\n\t"
-                 "buffer_inv\n\t"
-                 "s_mov_b64 exec, %[save]\n\t"
-                 "s_getreg_b32 %[after], hwreg(HW_REG_IB_STS)\n\t"
-                 "s_waitcnt vmcnt(0)"
-                 : [dst] "=&v"(Dst), [dst2] "=&v"(Dst2), [before] "=&s"(B),
-                   [after] "=&s"(A), [save] "=&s"(Save)
-                 : [addr] "v"(Addr)
-                 : "memory");
+    VMCNT("s_mov_b64 exec, %[save]", "buffer_inv");
   else if constexpr (I == INV && E == EXEC_ZERO)
-    asm volatile("s_waitcnt vmcnt(0)\n\t"
-                 "global_load_dword %[dst], %[addr], off sc0 sc1\n\t"
-                 "s_getreg_b32 %[before], hwreg(HW_REG_IB_STS)\n\t"
-                 "s_mov_b64 %[save], exec\n\t"
-                 "s_mov_b64 exec, 0\n\t"
-                 "buffer_inv\n\t"
-                 "s_mov_b64 exec, %[save]\n\t"
-                 "s_getreg_b32 %[after], hwreg(HW_REG_IB_STS)\n\t"
-                 "s_waitcnt vmcnt(0)"
-                 : [dst] "=&v"(Dst), [dst2] "=&v"(Dst2), [before] "=&s"(B),
-                   [after] "=&s"(A), [save] "=&s"(Save)
-                 : [addr] "v"(Addr)
-                 : "memory");
+    VMCNT("s_mov_b64 exec, 0", "buffer_inv");
   else if constexpr (I == LOAD && E == EXEC_ALL)
-    asm volatile("s_waitcnt vmcnt(0)\n\t"
-                 "global_load_dword %[dst], %[addr], off sc0 sc1\n\t"
-                 "s_getreg_b32 %[before], hwreg(HW_REG_IB_STS)\n\t"
-                 "s_mov_b64 %[save], exec\n\t"
-                 "s_mov_b64 exec, %[save]\n\t"
-                 "global_load_dword %[dst2], %[addr], off offset:64 sc0 sc1\n\t"
-                 "s_mov_b64 exec, %[save]\n\t"
-                 "s_getreg_b32 %[after], hwreg(HW_REG_IB_STS)\n\t"
-                 "s_waitcnt vmcnt(0)"
-                 : [dst] "=&v"(Dst), [dst2] "=&v"(Dst2), [before] "=&s"(B),
-                   [after] "=&s"(A), [save] "=&s"(Save)
-                 : [addr] "v"(Addr)
-                 : "memory");
+    VMCNT("s_mov_b64 exec, %[save]",
+          "global_load_dword %[dst2], %[addr], off offset:64 sc0 sc1");
   else if constexpr (I == LOAD && E == EXEC_ZERO)
-    asm volatile("s_waitcnt vmcnt(0)\n\t"
-                 "global_load_dword %[dst], %[addr], off sc0 sc1\n\t"
-                 "s_getreg_b32 %[before], hwreg(HW_REG_IB_STS)\n\t"
-                 "s_mov_b64 %[save], exec\n\t"
-                 "s_mov_b64 exec, 0\n\t"
-                 "global_load_dword %[dst2], %[addr], off offset:64 sc0 sc1\n\t"
-                 "s_mov_b64 exec, %[save]\n\t"
-                 "s_getreg_b32 %[after], hwreg(HW_REG_IB_STS)\n\t"
-                 "s_waitcnt vmcnt(0)"
-                 : [dst] "=&v"(Dst), [dst2] "=&v"(Dst2), [before] "=&s"(B),
-                   [after] "=&s"(A), [save] "=&s"(Save)
-                 : [addr] "v"(Addr)
-                 : "memory");
+    VMCNT("s_mov_b64 exec, 0",
+          "global_load_dword %[dst2], %[addr], off offset:64 sc0 sc1");
   else
     static_assert(Unsupported<I>, "unsupported instruction or EXEC mode");
+#undef VMCNT
   (void)Dst;
   (void)Dst2;
   if (threadIdx.x % warpSize == 0) {
@@ -303,40 +247,24 @@ __global__ void issueKernel(unsigned long long *Cycles, unsigned long long *Real
   T.start();
   for (int It = 0; It < Iters; ++It) {
     unsigned long long Save;
+    // 16 copies of OP inside the EXEC save/restore.
+#define ISSUE(EXEC_SET, OP)                                                    \
+  asm volatile("s_mov_b64 %[save], exec\n\t" EXEC_SET "\n\t"                   \
+               ".rept 16\n\t" OP "\n\t"                                        \
+               ".endr\n\t"                                                     \
+               "s_mov_b64 exec, %[save]"                                       \
+               : [save] "=&s"(Save)::"memory")
     if constexpr (I == NOP && E == EXEC_ALL)
-      asm volatile("s_mov_b64 %[save], exec\n\t"
-                   "s_mov_b64 exec, %[save]\n\t"
-                   ".rept 16\n\t"
-                   "s_nop 0\n\t"
-                   ".endr\n\t"
-                   "s_mov_b64 exec, %[save]"
-                   : [save] "=&s"(Save)::"memory");
+      ISSUE("s_mov_b64 exec, %[save]", "s_nop 0");
     else if constexpr (I == INV && E == EXEC_ALL)
-      asm volatile("s_mov_b64 %[save], exec\n\t"
-                   "s_mov_b64 exec, %[save]\n\t"
-                   ".rept 16\n\t"
-                   "buffer_inv\n\t"
-                   ".endr\n\t"
-                   "s_mov_b64 exec, %[save]"
-                   : [save] "=&s"(Save)::"memory");
+      ISSUE("s_mov_b64 exec, %[save]", "buffer_inv");
     else if constexpr (I == INV && E == EXEC_ZERO)
-      asm volatile("s_mov_b64 %[save], exec\n\t"
-                   "s_mov_b64 exec, 0\n\t"
-                   ".rept 16\n\t"
-                   "buffer_inv\n\t"
-                   ".endr\n\t"
-                   "s_mov_b64 exec, %[save]"
-                   : [save] "=&s"(Save)::"memory");
+      ISSUE("s_mov_b64 exec, 0", "buffer_inv");
     else if constexpr (I == INV_SC0 && E == EXEC_ALL)
-      asm volatile("s_mov_b64 %[save], exec\n\t"
-                   "s_mov_b64 exec, %[save]\n\t"
-                   ".rept 16\n\t"
-                   "buffer_inv sc0\n\t"
-                   ".endr\n\t"
-                   "s_mov_b64 exec, %[save]"
-                   : [save] "=&s"(Save)::"memory");
+      ISSUE("s_mov_b64 exec, %[save]", "buffer_inv sc0");
     else
       static_assert(Unsupported<I>, "unsupported instruction or EXEC mode");
+#undef ISSUE
   }
   waitVmcnt0();
   T.stop(Cycles, Real, blockIdx.x);
@@ -349,52 +277,28 @@ __global__ void latencyKernel(unsigned long long *Cycles,
   T.start();
   for (int It = 0; It < Iters; ++It) {
     unsigned long long Save;
+    // 16 copies of OP, each followed by s_waitcnt vmcnt(0), inside the EXEC
+    // save/restore. An empty OP measures the wait alone.
+#define LATENCY(EXEC_SET, OP)                                                  \
+  asm volatile("s_mov_b64 %[save], exec\n\t" EXEC_SET "\n\t"                   \
+               ".rept 16\n\t" OP "\n\t"                                        \
+               "s_waitcnt vmcnt(0)\n\t"                                        \
+               ".endr\n\t"                                                     \
+               "s_mov_b64 exec, %[save]"                                       \
+               : [save] "=&s"(Save)::"memory")
     if constexpr (I == NONE && E == EXEC_ALL)
-      asm volatile("s_mov_b64 %[save], exec\n\t"
-                   "s_mov_b64 exec, %[save]\n\t"
-                   ".rept 16\n\t"
-                   "s_waitcnt vmcnt(0)\n\t"
-                   ".endr\n\t"
-                   "s_mov_b64 exec, %[save]"
-                   : [save] "=&s"(Save)::"memory");
+      LATENCY("s_mov_b64 exec, %[save]", "");
     else if constexpr (I == NOP && E == EXEC_ALL)
-      asm volatile("s_mov_b64 %[save], exec\n\t"
-                   "s_mov_b64 exec, %[save]\n\t"
-                   ".rept 16\n\t"
-                   "s_nop 0\n\t"
-                   "s_waitcnt vmcnt(0)\n\t"
-                   ".endr\n\t"
-                   "s_mov_b64 exec, %[save]"
-                   : [save] "=&s"(Save)::"memory");
+      LATENCY("s_mov_b64 exec, %[save]", "s_nop 0");
     else if constexpr (I == INV && E == EXEC_ALL)
-      asm volatile("s_mov_b64 %[save], exec\n\t"
-                   "s_mov_b64 exec, %[save]\n\t"
-                   ".rept 16\n\t"
-                   "buffer_inv\n\t"
-                   "s_waitcnt vmcnt(0)\n\t"
-                   ".endr\n\t"
-                   "s_mov_b64 exec, %[save]"
-                   : [save] "=&s"(Save)::"memory");
+      LATENCY("s_mov_b64 exec, %[save]", "buffer_inv");
     else if constexpr (I == INV && E == EXEC_ZERO)
-      asm volatile("s_mov_b64 %[save], exec\n\t"
-                   "s_mov_b64 exec, 0\n\t"
-                   ".rept 16\n\t"
-                   "buffer_inv\n\t"
-                   "s_waitcnt vmcnt(0)\n\t"
-                   ".endr\n\t"
-                   "s_mov_b64 exec, %[save]"
-                   : [save] "=&s"(Save)::"memory");
+      LATENCY("s_mov_b64 exec, 0", "buffer_inv");
     else if constexpr (I == INV_SC0 && E == EXEC_ALL)
-      asm volatile("s_mov_b64 %[save], exec\n\t"
-                   "s_mov_b64 exec, %[save]\n\t"
-                   ".rept 16\n\t"
-                   "buffer_inv sc0\n\t"
-                   "s_waitcnt vmcnt(0)\n\t"
-                   ".endr\n\t"
-                   "s_mov_b64 exec, %[save]"
-                   : [save] "=&s"(Save)::"memory");
+      LATENCY("s_mov_b64 exec, %[save]", "buffer_inv sc0");
     else
       static_assert(Unsupported<I>, "unsupported instruction or EXEC mode");
+#undef LATENCY
   }
   T.stop(Cycles, Real, blockIdx.x);
 }
